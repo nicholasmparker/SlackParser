@@ -1,43 +1,48 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Search Messages</title>
-    <link href="/static/styles.css" rel="stylesheet">
-</head>
-<body>
-    <div class="container">
-        <h1>Search Messages</h1>
-        <form action="/search" method="get" class="search-form">
-            <input type="text" name="q" value="{{ query }}" placeholder="Search messages..." class="search-input">
-            <button type="submit" class="search-button">Search</button>
-        </form>
+{% extends "base.html" %}
 
-        {% if results %}
-        <div class="search-results">
-            {% for result in results %}
-            <div class="message">
-                <div class="message-header">
-                    <span class="channel">
-                        {% if result.conversation %}
-                            <a href="/conversation/{{ result.conversation._id }}">
-                                #{{ result.conversation.name if result.conversation.name else result.conversation._id }}
-                            </a>
-                        {% else %}
-                            Unknown Channel
-                        {% endif %}
-                    </span>
-                    <span class="user">{{ result.user }}</span>
-                    <span class="timestamp">{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span>
-                </div>
-                <div class="message-content">
-                    {{ result.text }}
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-        {% elif query %}
-        <p>No results found for "{{ query }}"</p>
-        {% endif %}
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-8">
+    <div class="mb-8">
+        <form action="/search" method="get" class="flex gap-4">
+            <input type="text" 
+                   name="q" 
+                   value="{{ query }}" 
+                   placeholder="Search messages..." 
+                   class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#611f69] focus:border-transparent">
+            <button type="submit" 
+                    class="bg-[#611f69] text-white px-6 py-2 rounded-md hover:bg-[#4a154b] transition-colors">
+                Search
+            </button>
+        </form>
     </div>
-</body>
-</html>
+
+    {% if results %}
+    <div class="space-y-4">
+        {% for result in results %}
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex items-center gap-4 mb-2 text-sm text-gray-600">
+                <span class="font-medium">
+                    {% if result.conversation %}
+                        <a href="/conversation/{{ result.conversation._id }}" class="text-[#611f69] hover:underline">
+                            #{{ result.conversation.name if result.conversation.name else result.conversation._id }}
+                        </a>
+                    {% else %}
+                        Unknown Channel
+                    {% endif %}
+                </span>
+                <span>{{ result.user }}</span>
+                <span>{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+            </div>
+            <div class="text-gray-900">
+                {{ result.text }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% elif query %}
+    <div class="text-center py-8 text-gray-600">
+        No results found for "{{ query }}"
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

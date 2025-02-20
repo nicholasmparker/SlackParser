@@ -1,13 +1,17 @@
 from fastapi import FastAPI, Request, Query, HTTPException
+from starlette.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Optional
+from typing import Optional, Dict, Any
 import os
 from pathlib import Path
 from datetime import datetime
+import logging
+
+# Import our data module
+from app import import_data
 
 app = FastAPI()
 
@@ -161,3 +165,75 @@ async def search(request: Request, q: str = ""):
         "results": results,
         "query": q
     })
+
+@app.get("/admin")
+async def admin_page(request: Request):
+    stats = await get_system_stats()
+    import_status = await get_last_import_status()
+    return templates.TemplateResponse(
+        "admin.html",
+        {"request": request, "stats": stats, "import_status": import_status}
+    )
+
+async def get_system_stats() -> Dict[str, int]:
+    """Get system-wide statistics"""
+    stats = {
+        "total_messages": await db.messages.count_documents({}),
+        "total_channels": await db.conversations.count_documents({"type": {"$in": ["Channel", "Private Channel"]}}),
+        "total_users": await db.conversations.count_documents({"type": {"$in": ["Multi-Party Direct Message", "Direct Message", "dm", "Phone call"]}})
+    }
+    return stats
+
+async def get_last_import_status() -> Dict[str, Any]:
+    """Get status of the last import"""
+    status = await db.import_status.find_one(
+        sort=[("timestamp", -1)]
+    )
+    return status
+
+@app.post("/admin/import")
+async def import_new_messages(request: Request):
+    """Import new messages from Slack export"""
+    try:
+        # Import new messages
+        new_messages = await import_data.import_new_messages()
+        
+        # Record import status
+        await db.import_status.insert_one({
+            "timestamp": datetime.now(),
+            "messages_imported": new_messages,
+            "status": "success"
+        })
+        
+        return RedirectResponse(
+            url="/admin",
+            status_code=303
+        )
+    except Exception as e:
+        # Log detailed error info
+        logging.exception("Import failed with exception:")
+        return RedirectResponse(
+            url=f"/admin?error=import_failed&message={str(e)}",
+            status_code=303
+        )
+
+@app.post("/admin/flush")
+async def flush_data(request: Request):
+    """Delete all imported data"""
+    try:
+        # Drop all collections
+        await db.messages.drop()
+        await db.conversations.drop()
+        await db.import_status.drop()
+        
+        return RedirectResponse(
+            url="/admin",
+            status_code=303
+        )
+    except Exception as e:
+        # Log error and redirect
+        logging.error(f"Flush failed: {str(e)}")
+        return RedirectResponse(
+            url="/admin?error=flush_failed",
+            status_code=303
+        )

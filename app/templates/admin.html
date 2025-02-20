@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-xl font-semibold text-gray-800">Admin Dashboard</h2>
+        </div>
+        
+        <!-- Stats -->
+        <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-purple-50 rounded-lg p-4">
+                <h3 class="text-sm font-medium text-purple-600 mb-1">Total Messages</h3>
+                <p class="text-2xl font-bold text-purple-900">{{ stats.total_messages }}</p>
+            </div>
+            <div class="bg-blue-50 rounded-lg p-4">
+                <h3 class="text-sm font-medium text-blue-600 mb-1">Total Channels</h3>
+                <p class="text-2xl font-bold text-blue-900">{{ stats.total_channels }}</p>
+            </div>
+            <div class="bg-green-50 rounded-lg p-4">
+                <h3 class="text-sm font-medium text-green-600 mb-1">Total Users</h3>
+                <p class="text-2xl font-bold text-green-900">{{ stats.total_users }}</p>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="p-6 space-y-4">
+            <div class="border rounded-lg p-4">
+                <h3 class="text-lg font-medium text-gray-900 mb-2">Import Slack Export</h3>
+                <p class="text-gray-600 mb-4">Import new messages from your Slack workspace export directory.</p>
+                <form action="/admin/import" method="post" class="flex items-center gap-4">
+                    <button type="submit" 
+                            class="bg-[#611f69] text-white px-4 py-2 rounded-md hover:bg-[#4a154b] transition-colors">
+                        Import New Messages
+                    </button>
+                    {% if import_status %}
+                    <span class="text-sm text-gray-600">
+                        Last import: {{ import_status.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} 
+                        ({{ import_status.messages_imported }} messages)
+                    </span>
+                    {% endif %}
+                </form>
+            </div>
+
+            <div class="border rounded-lg p-4">
+                <h3 class="text-lg font-medium text-gray-900 mb-2">Flush Data</h3>
+                <p class="text-gray-600 mb-4">Delete all imported data for a fresh start. This action cannot be undone.</p>
+                <form action="/admin/flush" method="post" class="space-y-4" id="flushForm">
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" 
+                               id="confirmFlush" 
+                               class="rounded text-[#611f69] focus:ring-[#611f69]">
+                        <label for="confirmFlush" class="text-sm text-gray-700">
+                            I understand this will permanently delete all imported data
+                        </label>
+                    </div>
+                    <button type="submit" 
+                            disabled
+                            id="flushButton"
+                            class="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        Flush All Data
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Enable/disable flush button based on checkbox
+    const confirmCheckbox = document.getElementById('confirmFlush');
+    const flushButton = document.getElementById('flushButton');
+    
+    confirmCheckbox.addEventListener('change', (e) => {
+        flushButton.disabled = !e.target.checked;
+    });
+
+    // Confirm flush action
+    document.getElementById('flushForm').addEventListener('submit', (e) => {
+        if (!confirm('Are you sure you want to delete all data? This cannot be undone.')) {
+            e.preventDefault();
+        }
+    });
+</script>
+{% endblock %}

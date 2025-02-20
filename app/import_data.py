@@ -6,11 +6,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 from pathlib import Path
 import time
+import json
 
 # Constants
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+EXPORT_DIR = os.getenv("EXPORT_DIR", "export")
 
 async def wait_for_mongodb():
     """Wait for MongoDB to be ready"""
@@ -295,6 +297,79 @@ async def import_slack_data():
                     print(f"Error processing canvas {canvas_file}: {str(e)}")
     
     print("\nImport completed successfully")
+
+async def import_new_messages() -> int:
+    """Import only new messages from the Slack data directory.
+    Returns the number of new messages imported."""
+    
+    # Wait for MongoDB to be ready
+    client = await wait_for_mongodb()
+    db = client.slack_db
+    
+    # Get the timestamp of the most recent message
+    latest_msg = await db.messages.find_one(
+        sort=[("ts", -1)]
+    )
+    latest_ts = latest_msg["ts"] if latest_msg else 0
+    
+    # Track number of new messages
+    new_message_count = 0
+    
+    # Import all conversations first
+    conversations = await import_conversations()
+    
+    # For each conversation, import messages newer than latest_ts
+    for conv in conversations:
+        conv_path = os.path.join(DATA_DIR, conv["id"])
+        if not os.path.isdir(conv_path):
+            continue
+            
+        # Process each JSON file in conversation directory
+        for json_file in sorted(os.listdir(conv_path)):
+            if not json_file.endswith(".json"):
+                continue
+                
+            with open(os.path.join(conv_path, json_file)) as f:
+                messages = json.load(f)
+                
+            # Filter and import only new messages
+            new_messages = [msg for msg in messages if float(msg["ts"]) > latest_ts]
+            if new_messages:
+                await db.messages.insert_many([
+                    {**msg, "conversation_id": conv["id"]} 
+                    for msg in new_messages
+                ])
+                new_message_count += len(new_messages)
+    
+    return new_message_count
+
+async def import_conversations():
+    """Import all conversations from the Slack data directory."""
+    client = await wait_for_mongodb()
+    db = client.slack_db
+    
+    conversations = []
+    
+    # Walk through the data directory
+    for item in os.listdir(DATA_DIR):
+        item_path = os.path.join(DATA_DIR, item)
+        if os.path.isdir(item_path):
+            # Check for metadata file
+            metadata_file = os.path.join(item_path, "metadata.txt")
+            if os.path.exists(metadata_file):
+                with open(metadata_file, 'r') as f:
+                    metadata = await parse_channel_metadata(f.readlines())
+                    metadata['id'] = item  # Use directory name as ID
+                    conversations.append(metadata)
+                    
+                    # Upsert to database
+                    await db.conversations.update_one(
+                        {"id": metadata['id']},
+                        {"$set": metadata},
+                        upsert=True
+                    )
+    
+    return conversations
 
 if __name__ == "__main__":
     asyncio.run(import_slack_data())
