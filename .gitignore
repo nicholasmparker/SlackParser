@@ -32,12 +32,18 @@ ENV/
 *.swo
 
 # Project specific
-data/
-file_storage/
-mongodb_data/
+data/*
+!data/.gitkeep
+file_storage/*
+!file_storage/.gitkeep
+mongodb_data/*
+!mongodb_data/.gitkeep
 
 # Logs
 *.log
 
 # Environment variables
 .env
+
+# Mac
+.DS_Store
