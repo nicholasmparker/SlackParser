@@ -3,10 +3,13 @@ import httpx
 import chromadb
 from chromadb.config import Settings
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 import numpy as np
 import tenacity
+import re
+from datetime import datetime
+from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -42,7 +45,82 @@ class EmbeddingService:
         
         # Limit concurrent requests
         self.semaphore = asyncio.Semaphore(5)  # Max 5 concurrent requests
+
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize text for better embeddings"""
+        if not text:
+            return ""
+            
+        # Replace common Slack formatting
+        text = re.sub(r'<@\w+>', '@user', text)  # Replace user mentions
+        text = re.sub(r'<#\w+\|([^>]+)>', r'#\1', text)  # Replace channel mentions
+        text = re.sub(r'<(https?://[^|>]+)\|([^>]+)>', r'\2 (\1)', text)  # Clean URLs with titles
+        text = re.sub(r'<(https?://[^>]+)>', r'\1', text)  # Clean bare URLs
         
+        # Handle code blocks
+        text = re.sub(r'```[\s\S]*?```', '[code block]', text)  # Replace code blocks
+        text = re.sub(r'`[^`]+`', '[code]', text)  # Replace inline code
+        
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+
+    def _extract_urls(self, text: str) -> List[str]:
+        """Extract URLs from text"""
+        return re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', text)
+
+    def _get_thread_context(self, message: Dict[str, Any]) -> Optional[str]:
+        """Get thread context if available"""
+        thread_ts = message.get("thread_ts")
+        parent_text = message.get("parent_message", {}).get("text", "")
+        if thread_ts and parent_text:
+            return f"Thread context: {self._clean_text(parent_text)}\nReply: "
+        return None
+
+    def _format_reactions(self, message: Dict[str, Any]) -> Optional[str]:
+        """Format reactions into meaningful text"""
+        reactions = message.get("reactions", [])
+        if reactions:
+            reaction_texts = []
+            for reaction in reactions:
+                count = reaction.get("count", 0)
+                users = len(reaction.get("users", []))
+                name = reaction.get("name", "")
+                if count > 1:
+                    reaction_texts.append(f"{name} ({count} times)")
+            if reaction_texts:
+                return f"\nReactions: {', '.join(reaction_texts)}"
+        return None
+
+    async def _prepare_message_text(self, message: Dict[str, Any]) -> str:
+        """Prepare message text for embedding by combining various contexts"""
+        parts = []
+        
+        # Add thread context if available
+        thread_context = self._get_thread_context(message)
+        if thread_context:
+            parts.append(thread_context)
+        
+        # Add main message text
+        text = message.get("text", "")
+        cleaned_text = self._clean_text(text)
+        if cleaned_text:
+            parts.append(cleaned_text)
+        
+        # Add reactions if present
+        reactions = self._format_reactions(message)
+        if reactions:
+            parts.append(reactions)
+        
+        # Add file context if present
+        files = message.get("files", [])
+        if files:
+            file_names = [f.get("name", "unnamed") for f in files]
+            parts.append(f"\nAttached files: {', '.join(file_names)}")
+        
+        return " ".join(parts)
+
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(3),
         wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
@@ -70,7 +148,7 @@ class EmbeddingService:
                 result = response.json()
                 logger.debug(f"Response JSON: {result}")
                 return result.get("embedding", [])
-        
+
     async def generate_embedding(self, text: str) -> np.ndarray:
         """Generate embeddings using Ollama's nomic-embed-text model"""
         try:
@@ -83,42 +161,57 @@ class EmbeddingService:
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}", exc_info=True)
             return np.zeros(768, dtype=np.float32)  # Return zeros with correct dimension
-    
-    async def add_messages(self, messages: List[Dict[str, Any]]):
-        """Add messages to ChromaDB with their embeddings"""
+
+    async def add_messages(self, messages: List[Dict[str, Any]], batch_size: int = 50):
+        """Add messages to ChromaDB with their embeddings in batches"""
         if not messages:
             return
             
-        try:
-            # Generate embeddings in parallel
-            embeddings = await asyncio.gather(*[
-                self.generate_embedding(str(msg.get("text", ""))) 
-                for msg in messages
-            ])
-            
-            # Prepare data for ChromaDB
-            ids = [str(msg["_id"]) for msg in messages]
-            texts = [str(msg.get("text", "")) for msg in messages]
-            metadatas = [{
-                "user": msg.get("user", "unknown"),
-                "conversation_id": msg.get("conversation_id", "unknown"),
-                "timestamp": msg.get("timestamp", "").isoformat() if msg.get("timestamp") else "",
-                "ts": str(msg.get("ts", ""))
-            } for msg in messages]
-            
-            # Add to ChromaDB
-            self.collection.add(
-                embeddings=embeddings,
-                documents=texts,
-                metadatas=metadatas,
-                ids=ids
-            )
-            
-            logger.info(f"Added {len(messages)} messages to vector store")
-        except Exception as e:
-            logger.error(f"Error adding messages: {str(e)}", exc_info=True)
-            raise
-    
+        total_messages = len(messages)
+        logger.info(f"Processing {total_messages} messages in batches of {batch_size}")
+        
+        for i in range(0, total_messages, batch_size):
+            batch = messages[i:i + batch_size]
+            try:
+                # Prepare texts with context
+                texts = await asyncio.gather(*[
+                    self._prepare_message_text(msg) 
+                    for msg in batch
+                ])
+                
+                # Generate embeddings in parallel
+                embeddings = await asyncio.gather(*[
+                    self.generate_embedding(text) 
+                    for text in texts
+                ])
+                
+                # Prepare data for ChromaDB
+                ids = [str(msg["_id"]) for msg in batch]
+                metadatas = [{
+                    "user": msg.get("user", "unknown"),
+                    "conversation_id": msg.get("conversation_id", "unknown"),
+                    "channel_name": msg.get("channel_name", "unknown"),
+                    "timestamp": msg.get("timestamp", "").isoformat() if msg.get("timestamp") else "",
+                    "ts": str(msg.get("ts", "")),
+                    "is_thread_reply": bool(msg.get("thread_ts")),
+                    "has_files": bool(msg.get("files")),
+                    "reaction_count": sum(r.get("count", 0) for r in msg.get("reactions", [])),
+                    "reply_count": msg.get("reply_count", 0)
+                } for msg in batch]
+                
+                # Add to ChromaDB
+                self.collection.add(
+                    embeddings=embeddings,
+                    documents=texts,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+                
+                logger.info(f"Added batch of {len(batch)} messages ({i + len(batch)}/{total_messages})")
+            except Exception as e:
+                logger.error(f"Error processing batch {i//batch_size + 1}: {str(e)}", exc_info=True)
+                raise
+
     async def semantic_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search for semantically similar messages"""
         # Generate query embedding
