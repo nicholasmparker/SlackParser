@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Search Messages</title>
+    <link href="/static/styles.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>Search Messages</h1>
+        <form action="/search" method="get" class="search-form">
+            <input type="text" name="q" value="{{ query }}" placeholder="Search messages..." class="search-input">
+            <button type="submit" class="search-button">Search</button>
+        </form>
+
+        {% if results %}
+        <div class="search-results">
+            {% for result in results %}
+            <div class="message">
+                <div class="message-header">
+                    <span class="channel">
+                        {% if result.conversation %}
+                            <a href="/conversation/{{ result.conversation._id }}">
+                                #{{ result.conversation.name if result.conversation.name else result.conversation._id }}
+                            </a>
+                        {% else %}
+                            Unknown Channel
+                        {% endif %}
+                    </span>
+                    <span class="user">{{ result.user }}</span>
+                    <span class="timestamp">{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+                </div>
+                <div class="message-content">
+                    {{ result.text }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% elif query %}
+        <p>No results found for "{{ query }}"</p>
+        {% endif %}
+    </div>
+</body>
+</html>

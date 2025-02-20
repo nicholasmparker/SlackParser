@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold mb-4">{{ conversation.name if conversation.name else conversation._id }}</h1>
+        
+        <!-- Conversation search -->
+        <form method="get" class="flex gap-2 items-center">
+            <input type="text" 
+                   name="q" 
+                   value="{{ request.query_params.get('q', '') }}"
+                   placeholder="Search in this conversation..." 
+                   class="flex-1 p-2 border rounded-lg">
+            <button type="submit" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700">
+                Search
+            </button>
+            {% if request.query_params.get('q') %}
+            <a href="?page={{ page }}" class="text-gray-600 hover:text-gray-800">
+                Clear
+            </a>
+            {% endif %}
+        </form>
+    </div>
+
+    {% if messages %}
+    <div class="space-y-4">
+        {% for message in messages %}
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-start mb-2">
+                <span class="font-medium text-gray-900">{{ message.user }}</span>
+                <span class="text-sm text-gray-500">{{ message.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+            </div>
+            <div class="message-text prose prose-sm max-w-none">
+                {{ message.text }}
+            </div>
+            {% if message.files %}
+            <div class="mt-2 pt-2 border-t">
+                {% for file in message.files %}
+                <a href="/files/{{ file.id }}" 
+                   class="inline-flex items-center gap-1 text-sm text-purple-600 hover:text-purple-800">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    {{ file.name }}
+                </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="mt-8 flex justify-center gap-2">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{% if request.query_params.get('q') %}&q={{ request.query_params.get('q') }}{% endif %}"
+           class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200">
+            Previous
+        </a>
+        {% endif %}
+        
+        <span class="px-3 py-1">
+            Page {{ page }} of {{ total_pages }}
+        </span>
+        
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}{% if request.query_params.get('q') %}&q={{ request.query_params.get('q') }}{% endif %}"
+           class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200">
+            Next
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="text-center text-gray-500 py-8">
+        No messages found{% if request.query_params.get('q') %} matching "{{ request.query_params.get('q') }}"{% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
