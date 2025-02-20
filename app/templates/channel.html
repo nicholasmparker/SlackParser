@@ -2,7 +2,7 @@
 
 {% block content %}
 <div class="max-w-5xl mx-auto">
-    <div class="channel-header sticky top-[57px] z-40 px-4 py-2 flex justify-between items-center mb-6">
+    <div class="channel-header sticky top-[57px] z-40 px-4 py-2 flex justify-between items-center mb-6 bg-white border-b">
         <div class="flex items-center gap-3">
             <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
                 <span class="text-gray-400">#</span>
@@ -13,27 +13,17 @@
             </a>
         </div>
         
-        <form method="get" class="flex gap-2">
-            <div class="relative">
-                <input type="text" 
-                       name="q" 
-                       value="{{ search_query or '' }}"
-                       placeholder="Search in channel..."
-                       class="search-input w-72 px-4 py-1.5 pr-10 border border-gray-300 rounded-md text-sm focus:outline-none">
-                <svg class="w-4 h-4 text-gray-400 absolute right-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-            </div>
-            <button type="submit"
-                    class="bg-[#611f69] text-white px-4 py-1.5 rounded-md text-sm hover:bg-[#4a154b] transition-colors">
-                Search
-            </button>
-        </form>
+        <a href="/search" class="text-[#1264a3] hover:underline text-sm flex items-center gap-1">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            Search Messages
+        </a>
     </div>
     
     <div class="space-y-1">
         {% for message in messages %}
-        <div class="message-container px-4 py-2 hover:bg-gray-50">
+        <div id="{{ message.ts }}" class="message-container px-4 py-2 hover:bg-gray-50">
             <div class="flex items-start gap-3">
                 <div class="w-9 h-9 rounded bg-[#611f69] text-white flex items-center justify-center text-sm font-medium">
                     {{ message.user[:2].upper() }}
@@ -113,4 +103,25 @@
     </div>
     {% endif %}
 </div>
+
+<script>
+// Scroll to message if hash is present
+window.addEventListener('load', function() {
+    if (window.location.hash) {
+        const messageId = window.location.hash.substring(1);
+        const messageElement = document.getElementById(messageId);
+        if (messageElement) {
+            messageElement.scrollIntoView();
+            messageElement.classList.add('bg-yellow-50');
+            setTimeout(() => {
+                messageElement.classList.remove('bg-yellow-50');
+                messageElement.classList.add('bg-transparent');
+                setTimeout(() => {
+                    messageElement.classList.remove('bg-transparent');
+                }, 500);
+            }, 2000);
+        }
+    }
+});
+</script>
 {% endblock %}

@@ -1,48 +1,229 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+.spinner {
+    display: none;
+    width: 40px;
+    height: 40px;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loading {
+    text-align: center;
+    color: #666;
+    margin: 10px 0;
+    display: none;
+}
+</style>
+
 <div class="max-w-4xl mx-auto px-4 py-8">
     <div class="mb-8">
-        <form action="/search" method="get" class="flex gap-4">
-            <input type="text" 
-                   name="q" 
-                   value="{{ query }}" 
-                   placeholder="Search messages..." 
-                   class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#611f69] focus:border-transparent">
-            <button type="submit" 
-                    class="bg-[#611f69] text-white px-6 py-2 rounded-md hover:bg-[#4a154b] transition-colors">
-                Search
-            </button>
+        <h1 class="text-3xl font-bold mb-4">Search Messages</h1>
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <h2 class="font-semibold mb-2">About Search</h2>
+            <p class="text-sm text-gray-600 mb-2">This search combines two powerful methods:</p>
+            <ul class="text-sm text-gray-600 list-disc list-inside mb-2">
+                <li><strong>Keyword Search:</strong> Finds exact word matches (like traditional search)</li>
+                <li><strong>AI Search:</strong> Understands meaning and finds conceptually related messages</li>
+            </ul>
+            <p class="text-sm text-gray-600">Use the slider below to balance between these methods based on your needs.</p>
+        </div>
+        
+        <form id="searchForm" class="space-y-4">
+            <div class="flex gap-4">
+                <input type="text" 
+                       name="query" 
+                       id="query"
+                       value="{{ query }}"
+                       placeholder="Enter your search query..." 
+                       class="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            <div class="flex items-center gap-4">
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Search Balance</label>
+                    <div class="flex items-center gap-4">
+                        <span class="text-sm text-gray-500">AI Search</span>
+                        <input type="range" 
+                               id="hybrid_alpha" 
+                               name="hybrid_alpha" 
+                               min="0" 
+                               max="1" 
+                               step="0.1" 
+                               value="0.5"
+                               class="flex-1">
+                        <span class="text-sm text-gray-500">Keyword Search</span>
+                    </div>
+                    <div class="text-center text-sm text-gray-500 mt-1">
+                        Current: <span id="hybrid_alpha_value">50% Balanced</span>
+                    </div>
+                </div>
+                
+                <button type="submit" 
+                        class="px-6 py-2 bg-[#611f69] text-white rounded-lg hover:bg-[#4a154b] transition-colors">
+                    Search
+                </button>
+            </div>
+            
+            <div class="flex flex-wrap gap-4">
+                <div class="flex items-center gap-2">
+                    <label for="limit" class="text-sm text-gray-600">Results:</label>
+                    <select id="limit" 
+                            name="limit"
+                            class="px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#611f69] focus:border-transparent">
+                        <option value="5">5</option>
+                        <option value="10" selected>10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap gap-4">
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" 
+                           id="filter_has_files" 
+                           name="filter_has_files"
+                           class="rounded text-[#611f69] focus:ring-[#611f69]">
+                    <label for="filter_has_files" class="text-sm text-gray-600">Has Files</label>
+                </div>
+                
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" 
+                           id="filter_has_reactions" 
+                           name="filter_has_reactions"
+                           class="rounded text-[#611f69] focus:ring-[#611f69]">
+                    <label for="filter_has_reactions" class="text-sm text-gray-600">Has Reactions</label>
+                </div>
+                
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" 
+                           id="filter_in_thread" 
+                           name="filter_in_thread"
+                           class="rounded text-[#611f69] focus:ring-[#611f69]">
+                    <label for="filter_in_thread" class="text-sm text-gray-600">Thread Replies</label>
+                </div>
+            </div>
         </form>
     </div>
 
-    {% if results %}
-    <div class="space-y-4">
-        {% for result in results %}
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex items-center gap-4 mb-2 text-sm text-gray-600">
-                <span class="font-medium">
-                    {% if result.conversation %}
-                        <a href="/conversation/{{ result.conversation._id }}" class="text-[#611f69] hover:underline">
-                            #{{ result.conversation.name if result.conversation.name else result.conversation._id }}
-                        </a>
-                    {% else %}
-                        Unknown Channel
-                    {% endif %}
-                </span>
-                <span>{{ result.user }}</span>
-                <span>{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span>
-            </div>
-            <div class="text-gray-900">
-                {{ result.text }}
-            </div>
-        </div>
-        {% endfor %}
+    <!-- Loading indicator -->
+    <div id="searchLoading" class="loading">
+        <div class="spinner"></div>
+        <p class="mt-2">Searching messages...</p>
     </div>
-    {% elif query %}
-    <div class="text-center py-8 text-gray-600">
-        No results found for "{{ query }}"
+
+    <div id="results" class="space-y-4">
+        <!-- Results will be inserted here -->
     </div>
-    {% endif %}
 </div>
+
+<script>
+document.getElementById('hybrid_alpha').addEventListener('input', function(e) {
+    const value = e.target.value;
+    const percent = Math.round(value * 100);
+    document.getElementById('hybrid_alpha_value').textContent = 
+        `${percent}% ${percent > 50 ? 'AI' : 'Keyword'}`;
+});
+
+document.getElementById('searchForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    // Show loading indicator
+    const loading = document.getElementById('searchLoading');
+    loading.style.display = 'block';
+    
+    // Show spinner
+    const spinner = loading.querySelector('.spinner');
+    spinner.style.display = 'block';
+    
+    const form = e.target;
+    const query = form.query.value;
+    const hybrid_alpha = parseFloat(form.hybrid_alpha.value);
+    const limit = parseInt(form.limit.value);
+    const filter_has_files = form.filter_has_files?.checked;
+    const filter_has_reactions = form.filter_has_reactions?.checked;
+    const filter_in_thread = form.filter_in_thread?.checked;
+    
+    try {
+        const response = await fetch('/semantic-search', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                query: query,
+                hybrid_alpha: hybrid_alpha,
+                limit: limit,
+                filter_has_files: filter_has_files || null,
+                filter_has_reactions: filter_has_reactions || null,
+                filter_in_thread: filter_in_thread || null
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const resultsDiv = document.getElementById('results');
+        
+        // Hide loading indicator
+        loading.style.display = 'none';
+        spinner.style.display = 'none';
+        
+        if (data.results && data.results.length > 0) {
+            resultsDiv.innerHTML = data.results.map(result => `
+                <div class="bg-white rounded-lg shadow p-4">
+                    <div class="flex items-center gap-4 mb-2 text-sm text-gray-600">
+                        <span class="font-medium">
+                            <a href="/conversation/${result.metadata.conversation_id}#${result.metadata.ts}" class="text-blue-500 hover:underline">
+                                ${result.metadata.channel_name || result.metadata.conversation_id}
+                            </a>
+                        </span>
+                        <span>${result.metadata.user}</span>
+                        <span>${new Date(result.metadata.timestamp).toLocaleString()}</span>
+                        <span class="text-xs bg-gray-100 px-2 py-1 rounded">
+                            Score: ${result.score.toFixed(2)}
+                            (S: ${result.semantic_score.toFixed(2)},
+                             K: ${result.keyword_score.toFixed(2)})
+                        </span>
+                    </div>
+                    <div class="text-gray-900 whitespace-pre-wrap">
+                        ${result.text}
+                    </div>
+                </div>
+            `).join('');
+        } else {
+            resultsDiv.innerHTML = `
+                <div class="text-center py-8 text-gray-600">
+                    No results found for "${query}"
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        const resultsDiv = document.getElementById('results');
+        resultsDiv.innerHTML = `
+            <div class="text-center py-8 text-red-600">
+                Error performing search. Please try again.
+            </div>
+        `;
+        
+        // Hide loading indicator
+        loading.style.display = 'none';
+        spinner.style.display = 'none';
+    }
+});
+</script>
 {% endblock %}

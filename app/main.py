@@ -4,11 +4,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import os
 from pathlib import Path
 from datetime import datetime
 import logging
+from pydantic import BaseModel
 from app.embeddings import EmbeddingService
 
 # Import our data module
@@ -125,10 +126,10 @@ async def view_conversation(
     request: Request,
     conversation_id: str,
     page: int = Query(1, ge=1),
-    q: Optional[str] = None
+    q: Optional[str] = None,
+    ts: Optional[float] = None
 ):
     page_size = 50
-    skip = (page - 1) * page_size
     
     # Get conversation metadata
     conversation = await db.conversations.find_one({"_id": conversation_id})
@@ -140,6 +141,20 @@ async def view_conversation(
     if q:
         query["$text"] = {"$search": q}
     
+    # If we have a timestamp in the URL, find which page it's on
+    if ts is not None:
+        # Convert float timestamp to integer for matching
+        ts_int = int(ts)
+        # Count messages before this timestamp
+        count_before = await db.messages.count_documents({
+            **query,
+            "ts": {"$gte": ts_int}  # Count messages after this one since we sort descending
+        })
+        # Calculate which page this message is on
+        page = (count_before // page_size) + 1
+    
+    skip = (page - 1) * page_size
+    
     # Get messages with sorting
     sort = [("timestamp", -1)]
     if q:  # If searching, also sort by text score
@@ -148,7 +163,7 @@ async def view_conversation(
     # Get messages
     messages = await db.messages.find(
         query,
-        {"score": {"$meta": "textScore"}} if q else None
+        {"score": {"$meta": "textScore"}, "ts": 1, "text": 1, "user": 1, "timestamp": 1, "files": 1, "reactions": 1} if q else None
     ).sort(sort).skip(skip).limit(page_size).to_list(length=page_size)
     
     # Get total count for pagination
@@ -184,6 +199,7 @@ async def files(request: Request, q: str = ""):
 
 @app.get("/search")
 async def search(request: Request, q: str = ""):
+    """Render search page or perform search"""
     if not q:
         return templates.TemplateResponse("search.html", {
             "request": request,
@@ -208,14 +224,45 @@ async def search(request: Request, q: str = ""):
         "query": q
     })
 
-@app.post("/semantic-search")
-async def semantic_search(query: str = Body(..., embed=True)):
-    """Semantic search endpoint"""
+@app.post("/search")
+async def semantic_search(
+    query: str = Body(..., embed=True),
+    limit: int = Body(10),
+    hybrid_alpha: float = Body(0.5),
+    filter_channels: Optional[List[str]] = Body(None),
+    filter_users: Optional[List[str]] = Body(None),
+    filter_has_files: Optional[bool] = Body(None),
+    filter_has_reactions: Optional[bool] = Body(None),
+    filter_in_thread: Optional[bool] = Body(None),
+    filter_date_range: Optional[tuple[datetime, datetime]] = Body(None)
+):
+    """Search for messages using hybrid search"""
+    logger = logging.getLogger(__name__)
     try:
-        results = await embedding_service.search(query)
+        logger.info(f"Searching with query: {query}")
+        
+        # Perform hybrid search
+        results = await embedding_service.search(
+            query=query,
+            limit=limit,
+            hybrid_alpha=hybrid_alpha,
+            filter_channels=filter_channels,
+            filter_users=filter_users,
+            filter_has_files=filter_has_files,
+            filter_has_reactions=filter_has_reactions,
+            filter_in_thread=filter_in_thread,
+            filter_date_range=filter_date_range
+        )
+        
+        # Get conversation details for each result
+        for result in results:
+            conversation = await db.conversations.find_one({"_id": result["conversation_id"]})
+            result["conversation"] = conversation
+        
         return {"results": results}
+        
     except Exception as e:
-        logging.error(f"Error in semantic search: {str(e)}", exc_info=True)
+        logger.error(f"Search error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin")
