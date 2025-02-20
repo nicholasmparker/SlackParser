@@ -235,6 +235,35 @@ class EmbeddingService:
         
         return messages
     
+    async def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for messages similar to the query"""
+        try:
+            # Generate embedding for query
+            query_embedding = await self.generate_embedding(query)
+            
+            # Search in ChromaDB
+            results = self.collection.query(
+                query_embeddings=[query_embedding.tolist()],
+                n_results=limit,
+                include=["metadatas", "documents", "distances"]
+            )
+            
+            # Format results
+            formatted_results = []
+            for i in range(len(results["ids"][0])):
+                formatted_results.append({
+                    "id": results["ids"][0][i],
+                    "text": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i]
+                })
+            
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"Error in semantic search: {str(e)}", exc_info=True)
+            return []
+
     async def delete_all(self):
         """Delete all data from the vector store"""
         try:

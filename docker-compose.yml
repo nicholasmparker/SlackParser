@@ -7,9 +7,14 @@ services:
       - "8000:8000"
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
+      - OLLAMA_URL=http://host.docker.internal:11434
     volumes:
+      - ./app:/app/app
       - ./data:/data
       - ./file_storage:/file_storage
+      - ./chroma_data:/app/chroma_data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - mongodb
     deploy:

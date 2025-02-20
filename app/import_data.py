@@ -7,12 +7,16 @@ import asyncio
 from pathlib import Path
 import time
 import json
+from app.embeddings import EmbeddingService
 
 # Constants
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 EXPORT_DIR = os.getenv("EXPORT_DIR", "export")
+
+# Initialize embedding service
+embedding_service = EmbeddingService()
 
 async def wait_for_mongodb():
     """Wait for MongoDB to be ready"""
@@ -314,6 +318,7 @@ async def import_new_messages() -> int:
     
     # Track number of new messages
     new_message_count = 0
+    new_messages_for_embedding = []
     
     # Import all conversations first
     conversations = await import_conversations()
@@ -335,11 +340,25 @@ async def import_new_messages() -> int:
             # Filter and import only new messages
             new_messages = [msg for msg in messages if float(msg["ts"]) > latest_ts]
             if new_messages:
-                await db.messages.insert_many([
-                    {**msg, "conversation_id": conv["id"]} 
-                    for msg in new_messages
-                ])
+                # Add conversation_id to messages
+                for msg in new_messages:
+                    msg["conversation_id"] = conv["id"]
+                
+                # Insert into MongoDB
+                result = await db.messages.insert_many(new_messages)
+                
+                # Prepare messages for embedding
+                messages_with_ids = []
+                for msg, inserted_id in zip(new_messages, result.inserted_ids):
+                    msg["_id"] = inserted_id
+                    messages_with_ids.append(msg)
+                new_messages_for_embedding.extend(messages_with_ids)
+                
                 new_message_count += len(new_messages)
+    
+    # Generate and store embeddings for new messages
+    if new_messages_for_embedding:
+        await embedding_service.add_messages(new_messages_for_embedding)
     
     return new_message_count
 

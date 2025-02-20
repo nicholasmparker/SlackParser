@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi import FastAPI, Request, Query, HTTPException, Body
 from starlette.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -208,21 +208,15 @@ async def search(request: Request, q: str = ""):
         "query": q
     })
 
-@app.get("/semantic-search")
-async def semantic_search(request: Request, q: Optional[str] = None):
+@app.post("/semantic-search")
+async def semantic_search(query: str = Body(..., embed=True)):
     """Semantic search endpoint"""
-    results = []
-    if q:
-        results = await embedding_service.semantic_search(q, limit=10)
-    
-    return templates.TemplateResponse(
-        "semantic_search.html",
-        {
-            "request": request,
-            "query": q,
-            "results": results
-        }
-    )
+    try:
+        results = await embedding_service.search(query)
+        return {"results": results}
+    except Exception as e:
+        logging.error(f"Error in semantic search: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin")
 async def admin_page(request: Request):
