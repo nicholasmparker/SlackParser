@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import logging
+from app.embeddings import EmbeddingService
 
 # Import our data module
 from app import import_data
@@ -27,6 +28,42 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 app.mount("/files", StaticFiles(directory=FILE_STORAGE), name="files")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+# Add template filters
+def timedelta_filter(value):
+    """Format a timestamp as a human-readable time delta"""
+    if not value:
+        return ""
+    try:
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        now = datetime.now(value.tzinfo)
+        delta = now - value
+        if delta.days > 365:
+            years = delta.days // 365
+            return f"{years} year{'s' if years != 1 else ''} ago"
+        elif delta.days > 30:
+            months = delta.days // 30
+            return f"{months} month{'s' if months != 1 else ''} ago"
+        elif delta.days > 0:
+            return f"{delta.days} day{'s' if delta.days != 1 else ''} ago"
+        elif delta.seconds > 3600:
+            hours = delta.seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        elif delta.seconds > 60:
+            minutes = delta.seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        else:
+            return "just now"
+    except Exception:
+        return ""
+
+templates.env.filters["timedelta"] = timedelta_filter
+
+# Initialize embedding service
+async def init_embedding_service():
+    global embedding_service
+    embedding_service = EmbeddingService()
+
 # MongoDB connection
 client = AsyncIOMotorClient(MONGODB_URL)
 db = client.slack_db
@@ -37,7 +74,12 @@ async def setup_indexes():
 
 @app.on_event("startup")
 async def startup_event():
+    """Initialize database connection and create indexes"""
+    global db
+    client = AsyncIOMotorClient(MONGODB_URL)
+    db = client.slack_db
     await setup_indexes()
+    await init_embedding_service()
 
 @app.get("/")
 async def home(request: Request):
@@ -165,6 +207,22 @@ async def search(request: Request, q: str = ""):
         "results": results,
         "query": q
     })
+
+@app.get("/semantic-search")
+async def semantic_search(request: Request, q: Optional[str] = None):
+    """Semantic search endpoint"""
+    results = []
+    if q:
+        results = await embedding_service.semantic_search(q, limit=10)
+    
+    return templates.TemplateResponse(
+        "semantic_search.html",
+        {
+            "request": request,
+            "query": q,
+            "results": results
+        }
+    )
 
 @app.get("/admin")
 async def admin_page(request: Request):

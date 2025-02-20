@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-8">
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold mb-4">AI-Powered Search</h1>
+        <p class="text-gray-600 mb-6">Ask questions about your Slack history in natural language</p>
+        
+        <form action="/semantic-search" method="get" class="flex gap-4">
+            <input type="text" 
+                   name="q" 
+                   value="{{ query }}" 
+                   placeholder="e.g. 'Find discussions about customer feedback' or 'What was decided about the API design?'" 
+                   class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#611f69] focus:border-transparent">
+            <button type="submit" 
+                    class="bg-[#611f69] text-white px-6 py-2 rounded-md hover:bg-[#4a154b] transition-colors">
+                Search
+            </button>
+        </form>
+    </div>
+
+    {% if results %}
+    <div class="space-y-6">
+        {% for result in results %}
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="p-4">
+                <div class="flex items-center gap-4 mb-3">
+                    <span class="font-medium text-[#611f69]">
+                        {% if result.metadata.conversation_id %}
+                            <a href="/conversation/{{ result.metadata.conversation_id }}" class="hover:underline">
+                                #{{ result.metadata.conversation_id }}
+                            </a>
+                        {% else %}
+                            Unknown Channel
+                        {% endif %}
+                    </span>
+                    <span class="text-sm text-gray-600">{{ result.metadata.user }}</span>
+                    <span class="text-sm text-gray-600">{{ result.metadata.timestamp }}</span>
+                    <span class="ml-auto text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded">
+                        {{ "%.1f"|format(result.similarity * 100) }}% match
+                    </span>
+                </div>
+                <div class="text-gray-900">
+                    {{ result.text }}
+                </div>
+            </div>
+            {% if not loop.last %}
+            <div class="px-4 py-3 bg-gray-50 text-sm text-gray-600">
+                {{ result.metadata.timestamp|timedelta }} later...
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% elif query %}
+    <div class="text-center py-8 text-gray-600">
+        No relevant messages found for your query. Try rephrasing or using different keywords.
+    </div>
+    {% else %}
+    <div class="bg-purple-50 border border-purple-100 rounded-lg p-6 mt-8">
+        <h2 class="text-lg font-semibold text-purple-900 mb-2">Example Questions</h2>
+        <ul class="space-y-2 text-purple-800">
+            <li>• "What decisions were made about the database schema?"</li>
+            <li>• "Find discussions about customer onboarding problems"</li>
+            <li>• "When did we last talk about the API rate limits?"</li>
+            <li>• "Show me conversations about team hiring"</li>
+        </ul>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

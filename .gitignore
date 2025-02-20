@@ -38,6 +38,10 @@ file_storage/*
 !file_storage/.gitkeep
 mongodb_data/*
 !mongodb_data/.gitkeep
+chroma_data/*
+!chroma_data/.gitkeep
+app/chroma_data/*
+!app/chroma_data/.gitkeep
 
 # Logs
 *.log
