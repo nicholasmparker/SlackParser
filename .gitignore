@@ -42,6 +42,8 @@ chroma_data/*
 !chroma_data/.gitkeep
 app/chroma_data/*
 !app/chroma_data/.gitkeep
+app/uploads/*
+!app/uploads/.gitkeep
 
 # Logs
 *.log

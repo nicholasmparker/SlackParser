@@ -21,6 +21,7 @@ async def get_messages_by_engagement(client, min_reactions=1, min_replies=1, lim
     # Query for messages with reactions or replies
     query = {
         "text": {"$exists": True, "$ne": ""},
+        "user": {"$not": {"$regex": ".*_bot$"}},  # Exclude bot messages
         "$or": [
             {"reactions": {"$exists": True, "$ne": []}},
             {"reply_count": {"$gte": min_replies}}
@@ -57,6 +58,7 @@ async def get_recent_messages(client, days=30, limit=None):
     # Query for recent messages
     query = {
         "text": {"$exists": True, "$ne": ""},
+        "user": {"$not": {"$regex": ".*_bot$"}},  # Exclude bot messages
         "timestamp": {"$gte": cutoff}
     }
     
@@ -66,34 +68,20 @@ async def get_recent_messages(client, days=30, limit=None):
         
     return await cursor.to_list(length=None)
 
-async def get_thread_contexts(client, message_ids):
-    """Get parent messages for thread replies"""
-    db = client.slack_db
+async def enrich_messages(client, messages):
+    """Enrich messages with additional context"""
+    # Get thread contexts
+    thread_ts_values = {msg.get("thread_ts") for msg in messages if msg.get("thread_ts")}
     thread_messages = {}
-    
-    # Get all thread_ts values
-    thread_ts_values = set()
-    for msg_id in message_ids:
-        thread_ts = msg_id.get("thread_ts")
-        if thread_ts:
-            thread_ts_values.add(thread_ts)
     
     if thread_ts_values:
         # Fetch all parent messages in one query
-        parent_messages = await db.messages.find({
+        parent_messages = await client.slack_db.messages.find({
             "ts": {"$in": list(thread_ts_values)}
         }).to_list(length=None)
         
         # Create lookup dictionary
-        for parent in parent_messages:
-            thread_messages[parent["ts"]] = parent
-    
-    return thread_messages
-
-async def enrich_messages(client, messages):
-    """Enrich messages with additional context"""
-    # Get thread contexts
-    thread_messages = await get_thread_contexts(client, messages)
+        thread_messages = {msg["ts"]: msg for msg in parent_messages}
     
     # Get channel names
     channel_ids = {msg["conversation_id"] for msg in messages if msg.get("conversation_id")}
@@ -118,11 +106,12 @@ async def enrich_messages(client, messages):
 
 async def main():
     parser = argparse.ArgumentParser(description='Train embeddings on Slack messages')
-    parser.add_argument('--limit', type=int, default=1000, help='Number of messages to process')
+    parser.add_argument('--limit', type=int, default=None, help='Number of messages to process')
     parser.add_argument('--batch-size', type=int, default=50, help='Batch size for processing')
     parser.add_argument('--days', type=int, default=30, help='Days of recent messages to include')
     parser.add_argument('--min-reactions', type=int, default=1, help='Minimum reactions for engagement-based selection')
     parser.add_argument('--min-replies', type=int, default=1, help='Minimum replies for engagement-based selection')
+    parser.add_argument('--engagement-ratio', type=float, default=0.5, help='Ratio of messages to select by engagement vs recency')
     args = parser.parse_args()
     
     # Initialize MongoDB client
@@ -134,24 +123,36 @@ async def main():
     try:
         # Get messages by engagement
         logger.info("Fetching high-engagement messages...")
+        if args.limit:
+            engagement_limit = int(args.limit * args.engagement_ratio)
+        else:
+            engagement_limit = None
+            
         engagement_messages = await get_messages_by_engagement(
             client, 
             min_reactions=args.min_reactions,
             min_replies=args.min_replies,
-            limit=args.limit // 2  # Split between engagement and recent
+            limit=engagement_limit
         )
+        logger.info(f"Got {len(engagement_messages)} high-engagement messages")
         
         # Get recent messages
         logger.info("Fetching recent messages...")
+        if args.limit:
+            recent_limit = args.limit - len(engagement_messages)
+        else:
+            recent_limit = None
+            
         recent_messages = await get_recent_messages(
             client,
             days=args.days,
-            limit=args.limit - len(engagement_messages)
+            limit=recent_limit
         )
+        logger.info(f"Got {len(recent_messages)} recent messages")
         
         # Combine and deduplicate messages
         all_messages = list({str(m["_id"]): m for m in engagement_messages + recent_messages}.values())
-        logger.info(f"Got {len(all_messages)} total messages")
+        logger.info(f"Got {len(all_messages)} total unique messages")
         
         # Enrich messages with context
         logger.info("Enriching messages with context...")
@@ -161,7 +162,7 @@ async def main():
         logger.info("Clearing existing embeddings...")
         await embedding_service.delete_all()
         
-        # Add messages to ChromaDB
+        # Add messages to ChromaDB in batches with progress bar
         logger.info("Generating embeddings and adding to ChromaDB...")
         await embedding_service.add_messages(enriched_messages, batch_size=args.batch_size)
         

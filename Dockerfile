@@ -4,26 +4,31 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    build-essential \
     curl \
-    httpie \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements and install Python packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create directories for mounted volumes
-RUN mkdir -p /data /file_storage /app/app
+# Create necessary directories
+RUN mkdir -p /data /files /data/uploads /data/extracts /app/file_storage
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV DATA_DIR=/data
-ENV FILE_STORAGE=/file_storage
-
-# Copy application files
+# Copy application code
 COPY app /app/app/
 
-# Copy start script and make it executable
+# Ensure static directory exists with correct permissions
+RUN mkdir -p /app/app/static/css /app/app/static/js \
+    && chown -R root:root /app/app/static
+
+# Copy static files
+COPY app/static/css/* /app/app/static/css/
+COPY app/static/js/* /app/app/static/js/
+
+# Copy startup script and make it executable
 COPY app/start.sh ./start.sh
 RUN chmod +x ./start.sh
 
+# Start the application
 CMD ["./start.sh"]

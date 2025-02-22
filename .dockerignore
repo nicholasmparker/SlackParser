@@ -1,0 +1,14 @@
+data/
+files/
+data/uploads/
+data/extracts/
+file_storage/
+chroma_data/
+app/uploads/
+app/chroma_data/
+__pycache__/
+*.pyc
+.env
+.git/
+.gitignore
+.DS_Store

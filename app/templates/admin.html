@@ -1,85 +1,256 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto">
-    <div class="bg-white shadow rounded-lg">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-xl font-semibold text-gray-800">Admin Dashboard</h2>
-        </div>
-        
-        <!-- Stats -->
-        <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="bg-purple-50 rounded-lg p-4">
-                <h3 class="text-sm font-medium text-purple-600 mb-1">Total Messages</h3>
-                <p class="text-2xl font-bold text-purple-900">{{ stats.total_messages }}</p>
-            </div>
-            <div class="bg-blue-50 rounded-lg p-4">
-                <h3 class="text-sm font-medium text-blue-600 mb-1">Total Channels</h3>
-                <p class="text-2xl font-bold text-blue-900">{{ stats.total_channels }}</p>
-            </div>
-            <div class="bg-green-50 rounded-lg p-4">
-                <h3 class="text-sm font-medium text-green-600 mb-1">Total Users</h3>
-                <p class="text-2xl font-bold text-green-900">{{ stats.total_users }}</p>
+<div class="container py-4">
+    <!-- Stats -->
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="text-purple">Total Messages</h6>
+                    <h2 class="mb-0">{{ stats.total_messages }}</h2>
+                </div>
             </div>
         </div>
-
-        <!-- Actions -->
-        <div class="p-6 space-y-4">
-            <div class="border rounded-lg p-4">
-                <h3 class="text-lg font-medium text-gray-900 mb-2">Import Slack Export</h3>
-                <p class="text-gray-600 mb-4">Import new messages from your Slack workspace export directory.</p>
-                <form action="/admin/import" method="post" class="flex items-center gap-4">
-                    <button type="submit" 
-                            class="bg-[#611f69] text-white px-4 py-2 rounded-md hover:bg-[#4a154b] transition-colors">
-                        Import New Messages
-                    </button>
-                    {% if import_status %}
-                    <span class="text-sm text-gray-600">
-                        Last import: {{ import_status.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} 
-                        ({{ import_status.messages_imported }} messages)
-                    </span>
-                    {% endif %}
-                </form>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="text-purple">Total Channels</h6>
+                    <h2 class="mb-0">{{ stats.total_channels }}</h2>
+                </div>
             </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="text-purple">Total Users</h6>
+                    <h2 class="mb-0">{{ stats.total_users }}</h2>
+                </div>
+            </div>
+        </div>
+    </div>
 
-            <div class="border rounded-lg p-4">
-                <h3 class="text-lg font-medium text-gray-900 mb-2">Flush Data</h3>
-                <p class="text-gray-600 mb-4">Delete all imported data for a fresh start. This action cannot be undone.</p>
-                <form action="/admin/flush" method="post" class="space-y-4" id="flushForm">
-                    <div class="flex items-center gap-2">
-                        <input type="checkbox" 
-                               id="confirmFlush" 
-                               class="rounded text-[#611f69] focus:ring-[#611f69]">
-                        <label for="confirmFlush" class="text-sm text-gray-700">
-                            I understand this will permanently delete all imported data
-                        </label>
+    <!-- Upload Section -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title mb-3">Upload Slack Export</h5>
+            <p class="text-muted mb-4">Upload your Slack export ZIP file here. The file will be processed and indexed for searching.</p>
+            
+            <form id="uploadForm" method="post" action="/admin/upload" enctype="multipart/form-data">
+                <div class="input-group mb-3">
+                    <input type="file" class="form-control" id="file" name="file" accept=".zip">
+                    <button type="submit" id="uploadButton" class="btn btn-primary">Upload</button>
+                </div>
+            </form>
+            
+            <div id="uploadProgress" class="d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div id="uploadStatus" class="text-primary">Uploading...</div>
+                    <div class="text-muted">
+                        <span id="uploadedSize">0</span>/<span id="totalSize">0</span> MB
                     </div>
-                    <button type="submit" 
-                            disabled
-                            id="flushButton"
-                            class="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        Flush All Data
-                    </button>
-                </form>
+                </div>
+                <div class="progress" style="height: 8px;">
+                    <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+                <div class="text-end mt-2">
+                    <small class="text-muted"><span id="uploadPercent">0</span>% complete</small>
+                </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Recent Uploads -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title mb-3">Recent Uploads</h5>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Status</th>
+                            <th>Size</th>
+                            <th>Created</th>
+                            <th class="text-end">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for upload in uploads %}
+                        <tr>
+                            <td>{{ upload.filename }}</td>
+                            <td>
+                                {% if upload.status == 'complete' %}
+                                <span class="badge bg-success">Complete</span>
+                                {% elif upload.status == 'error' %}
+                                <span class="badge bg-danger" title="{{ upload.error }}">Error</span>
+                                {% elif upload.status == 'UPLOADING' %}
+                                <span class="badge bg-primary">Uploading</span>
+                                {% elif upload.status == 'IMPORTING' %}
+                                <span class="badge bg-info">Importing</span>
+                                {% elif upload.status == 'extracting' %}
+                                <span class="badge bg-info">Extracting</span>
+                                {% elif upload.status == 'cancelled' %}
+                                <span class="badge bg-warning">Cancelled</span>
+                                {% else %}
+                                <span class="badge bg-secondary">{{ upload.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if upload.size %}
+                                {{ "{:,.0f}".format(upload.size / 1024 / 1024) }} MB
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>{{ upload.created_at | timedelta }}</td>
+                            <td class="text-end">
+                                {% if upload.status in ['UPLOADING', 'IMPORTING', 'extracting'] %}
+                                <form action="/admin/cancel_import/{{ upload._id }}" method="post" style="display: inline;">
+                                    <button type="submit" class="btn btn-sm btn-warning">Cancel</button>
+                                </form>
+                                {% elif upload.status in ['UPLOADED', 'cancelled', 'error'] %}
+                                <form action="/admin/import/{{ upload._id }}" method="post" style="display: inline;">
+                                    <button type="submit" class="btn btn-sm btn-primary">Start Import</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        {% if not uploads %}
+                        <tr>
+                            <td colspan="5" class="text-center py-4 text-muted">
+                                No uploads yet
+                            </td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Clear Data Section -->
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title mb-3">Clear Data</h5>
+            <p class="text-muted mb-4">Select which data you want to clear. This action cannot be undone.</p>
+            
+            <form action="/admin/clear" method="post">
+                <div class="list-group mb-4">
+                    <label class="list-group-item d-flex gap-3 py-3">
+                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_messages" name="clear_messages">
+                        <div>
+                            <strong class="d-block mb-1">Clear Messages</strong>
+                            <span class="d-block text-muted">Delete all imported messages and conversations</span>
+                        </div>
+                    </label>
+                    <label class="list-group-item d-flex gap-3 py-3">
+                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_embeddings" name="clear_embeddings">
+                        <div>
+                            <strong class="d-block mb-1">Clear Embeddings</strong>
+                            <span class="d-block text-muted">Delete all AI search embeddings</span>
+                        </div>
+                    </label>
+                    <label class="list-group-item d-flex gap-3 py-3">
+                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_uploads" name="clear_uploads">
+                        <div>
+                            <strong class="d-block mb-1">Clear Uploads</strong>
+                            <span class="d-block text-muted">Delete all uploaded files</span>
+                        </div>
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-danger" id="clearButton" disabled>Clear Selected Data</button>
+            </form>
         </div>
     </div>
 </div>
 
 <script>
-    // Enable/disable flush button based on checkbox
-    const confirmCheckbox = document.getElementById('confirmFlush');
-    const flushButton = document.getElementById('flushButton');
-    
-    confirmCheckbox.addEventListener('change', (e) => {
-        flushButton.disabled = !e.target.checked;
-    });
+// Enable clear button only when at least one checkbox is checked
+const clearForm = document.querySelector('form[action="/admin/clear"]');
+const clearButton = document.getElementById('clearButton');
+const clearCheckboxes = clearForm.querySelectorAll('input[type="checkbox"]');
 
-    // Confirm flush action
-    document.getElementById('flushForm').addEventListener('submit', (e) => {
-        if (!confirm('Are you sure you want to delete all data? This cannot be undone.')) {
-            e.preventDefault();
+function updateClearButton() {
+    clearButton.disabled = ![...clearCheckboxes].some(cb => cb.checked);
+}
+
+clearCheckboxes.forEach(cb => {
+    cb.addEventListener('change', updateClearButton);
+});
+
+// Handle file upload with progress
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const fileInput = document.getElementById('file');
+    const file = fileInput.files[0];
+    if (!file) {
+        alert('Please select a file first');
+        return;
+    }
+
+    // Disable upload button
+    const uploadButton = document.getElementById('uploadButton');
+    uploadButton.disabled = true;
+    uploadButton.classList.add('opacity-50');
+
+    // Show progress bar
+    const uploadProgress = document.getElementById('uploadProgress');
+    const progressBar = document.getElementById('progressBar');
+    const uploadPercent = document.getElementById('uploadPercent');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const uploadedSize = document.getElementById('uploadedSize');
+    const totalSize = document.getElementById('totalSize');
+    
+    uploadProgress.classList.remove('d-none');
+    totalSize.textContent = (file.size / (1024 * 1024)).toFixed(1);
+
+    // Create XHR request
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/admin/upload');
+    
+    // Track upload progress
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressBar.style.width = percent + '%';
+            uploadPercent.textContent = percent;
+            uploadedSize.textContent = (e.loaded / (1024 * 1024)).toFixed(1);
         }
-    });
+    };
+
+    // Handle state changes
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+                uploadStatus.textContent = 'Upload complete!';
+                uploadStatus.classList.remove('text-primary');
+                uploadStatus.classList.add('text-success');
+                progressBar.classList.add('bg-success');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                uploadStatus.textContent = 'Upload failed!';
+                uploadStatus.classList.remove('text-primary');
+                uploadStatus.classList.add('text-danger');
+                progressBar.classList.add('bg-danger');
+                uploadButton.disabled = false;
+                uploadButton.classList.remove('opacity-50');
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    alert('Upload failed: ' + (response.detail || xhr.statusText));
+                } catch (e) {
+                    alert('Upload failed: ' + xhr.statusText);
+                }
+            }
+        }
+    };
+
+    // Create form data and send
+    const formData = new FormData();
+    formData.append('file', file);
+    xhr.send(formData);
+});
 </script>
 {% endblock %}

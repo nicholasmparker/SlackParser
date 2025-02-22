@@ -10,3 +10,4 @@ aiofiles==23.2.1
 pydantic==2.4.2
 tenacity
 tqdm
+werkzeug

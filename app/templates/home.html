@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8 text-center">
+            <!-- Hero Section -->
+            <div class="mb-5">
+                <div class="display-4 mb-3">Welcome to Slack Parser</div>
+                <p class="lead text-muted mb-4">Search and analyze your Slack workspace with powerful AI assistance</p>
+                <div class="d-flex justify-content-center gap-3">
+                    <a href="/search" class="btn btn-lg btn-primary px-4">
+                        <i class="bi bi-search me-2"></i>Search Messages
+                    </a>
+                    <a href="/admin" class="btn btn-lg btn-outline-primary px-4">
+                        <i class="bi bi-upload me-2"></i>Upload Export
+                    </a>
+                </div>
+            </div>
+
+            <!-- Features Section -->
+            <div class="row g-4 py-5">
+                <div class="col-md-4">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <i class="bi bi-search text-primary" style="font-size: 2rem;"></i>
+                            </div>
+                            <h5 class="card-title">Hybrid Search</h5>
+                            <p class="card-text text-muted">Combine keyword and AI search to find exactly what you need</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <i class="bi bi-filter text-primary" style="font-size: 2rem;"></i>
+                            </div>
+                            <h5 class="card-title">Smart Filters</h5>
+                            <p class="card-text text-muted">Filter by files, reactions, threads, and more</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100 border-0 bg-light">
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <i class="bi bi-lightning text-primary" style="font-size: 2rem;"></i>
+                            </div>
+                            <h5 class="card-title">Fast Import</h5>
+                            <p class="card-text text-muted">Quickly import and process your Slack workspace exports</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Section -->
+            {% if stats %}
+            <div class="row g-4 mt-4">
+                <div class="col-md-4">
+                    <div class="card border-0">
+                        <div class="card-body">
+                            <h3 class="mb-2">{{ stats.message_count }}</h3>
+                            <p class="text-muted mb-0">Messages Indexed</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-0">
+                        <div class="card-body">
+                            <h3 class="mb-2">{{ stats.channel_count }}</h3>
+                            <p class="text-muted mb-0">Channels</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-0">
+                        <div class="card-body">
+                            <h3 class="mb-2">{{ stats.user_count }}</h3>
+                            <p class="text-muted mb-0">Users</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

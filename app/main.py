@@ -1,6 +1,5 @@
-from fastapi import FastAPI, Request, Query, HTTPException, Body
-from starlette.responses import RedirectResponse
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, Query, HTTPException, Body, File, UploadFile
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -11,6 +10,15 @@ from datetime import datetime
 import logging
 from pydantic import BaseModel
 from app.embeddings import EmbeddingService
+from bson import ObjectId
+from fastapi import status
+from werkzeug.utils import secure_filename
+import asyncio
+import shutil
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Import our data module
 from app import import_data
@@ -19,14 +27,15 @@ app = FastAPI()
 
 # Get environment variables
 FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 
 # Get base directory
 BASE_DIR = Path(__file__).resolve().parent
 
 # Setup static files and templates
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-app.mount("/files", StaticFiles(directory=FILE_STORAGE), name="files")
+app.mount("/files", StaticFiles(directory=FILE_STORAGE, html=True), name="files")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Add template filters
@@ -66,60 +75,58 @@ async def init_embedding_service():
     embedding_service = EmbeddingService()
 
 # MongoDB connection
-client = AsyncIOMotorClient(MONGODB_URL)
-db = client.slack_db
+@app.on_event("startup")
+async def startup_db_client():
+    """Initialize MongoDB connection on startup"""
+    try:
+        app.mongodb_client = AsyncIOMotorClient(MONGO_URL)
+        app.db = app.mongodb_client[MONGO_DB]
+        logger.info(f"Connected to MongoDB at {MONGO_URL}")
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        raise
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    """Close MongoDB connection on shutdown"""
+    if hasattr(app, "mongodb_client"):
+        app.mongodb_client.close()
+        logger.info("Closed MongoDB connection")
 
 # Ensure text search index exists
 async def setup_indexes():
-    await db.messages.create_index([("text", "text")])
+    await app.db.messages.create_index([("text", "text")])
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection and create indexes"""
-    global db
-    client = AsyncIOMotorClient(MONGODB_URL)
-    db = client.slack_db
     await setup_indexes()
     await init_embedding_service()
 
 @app.get("/")
 async def home(request: Request):
-    # Get list of channels and DMs
-    print("\n=== DEBUG: Loading home page ===")
-    
-    # Debug MongoDB connection
-    print("Checking MongoDB connection...")
+    """Render the home page with stats about the Slack workspace"""
     try:
-        await db.command("ping")
-        print("MongoDB connection successful")
+        # Get system stats
+        stats = await get_system_stats()
+        
+        # Render template with stats
+        return templates.TemplateResponse(
+            "home.html",
+            {
+                "request": request,
+                "stats": stats
+            }
+        )
     except Exception as e:
-        print(f"MongoDB connection error: {str(e)}")
-        raise
-    
-    print("\nQuerying channels...")
-    channels_query = {"type": {"$in": ["Channel", "Private Channel"]}, "name": {"$exists": True}}
-    channels = await db.conversations.find(channels_query).sort("name", 1).to_list(None)
-    print(f"Found {len(channels)} channels")
-    for channel in channels:
-        print(f"  - {channel.get('name', 'NO NAME')} ({channel.get('type', 'NO TYPE')})")
-    
-    print("\nQuerying DMs...")
-    dms_query = {"type": {"$in": ["Multi-Party Direct Message", "Direct Message", "dm", "Phone call"]}}
-    dms = await db.conversations.find(dms_query).sort("_id", 1).to_list(None)
-    print(f"Found {len(dms)} DMs")
-    
-    print("\nRendering template...")
-    response = templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "channels": channels,
-            "dms": dms
-        }
-    )
-    print("Template rendered successfully")
-    print("=== DEBUG END ===\n")
-    return response
+        logger.error(f"Error loading home page: {str(e)}")
+        return templates.TemplateResponse(
+            "home.html",
+            {
+                "request": request,
+                "stats": None
+            }
+        )
 
 @app.get("/conversation/{conversation_id}")
 async def view_conversation(
@@ -132,7 +139,7 @@ async def view_conversation(
     page_size = 50
     
     # Get conversation metadata
-    conversation = await db.conversations.find_one({"_id": conversation_id})
+    conversation = await app.db.conversations.find_one({"_id": conversation_id})
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
@@ -146,7 +153,7 @@ async def view_conversation(
         # Convert float timestamp to integer for matching
         ts_int = int(ts)
         # Count messages before this timestamp
-        count_before = await db.messages.count_documents({
+        count_before = await app.db.messages.count_documents({
             **query,
             "ts": {"$gte": ts_int}  # Count messages after this one since we sort descending
         })
@@ -161,13 +168,13 @@ async def view_conversation(
         sort.insert(0, ("score", {"$meta": "textScore"}))
     
     # Get messages
-    messages = await db.messages.find(
+    messages = await app.db.messages.find(
         query,
         {"score": {"$meta": "textScore"}, "ts": 1, "text": 1, "user": 1, "timestamp": 1, "files": 1, "reactions": 1} if q else None
     ).sort(sort).skip(skip).limit(page_size).to_list(length=page_size)
     
     # Get total count for pagination
-    total_messages = await db.messages.count_documents(query)
+    total_messages = await app.db.messages.count_documents(query)
     total_pages = (total_messages + page_size - 1) // page_size
     
     return templates.TemplateResponse(
@@ -189,7 +196,7 @@ async def files(request: Request, q: str = ""):
         query["name"] = {"$regex": q, "$options": "i"}
     
     # Get files matching query
-    files = await db.files.find(query).sort("name", 1).to_list(length=None)
+    files = await app.db.files.find(query).sort("name", 1).to_list(length=None)
     
     return templates.TemplateResponse("files.html", {
         "request": request,
@@ -208,14 +215,14 @@ async def search(request: Request, q: str = ""):
         })
     
     # Search messages
-    results = await db.messages.find(
+    results = await app.db.messages.find(
         {"$text": {"$search": q}},
         {"score": {"$meta": "textScore"}}
     ).sort([("score", {"$meta": "textScore"})]).to_list(length=50)
     
     # Get conversation details for each message
     for result in results:
-        conversation = await db.conversations.find_one({"_id": result["conversation_id"]})
+        conversation = await app.db.conversations.find_one({"_id": result["conversation_id"]})
         result["conversation"] = conversation
     
     return templates.TemplateResponse("search.html", {
@@ -256,7 +263,7 @@ async def semantic_search(
         
         # Get conversation details for each result
         for result in results:
-            conversation = await db.conversations.find_one({"_id": result["conversation_id"]})
+            conversation = await app.db.conversations.find_one({"_id": result["conversation_id"]})
             result["conversation"] = conversation
         
         return {"results": results}
@@ -267,25 +274,81 @@ async def semantic_search(
 
 @app.get("/admin")
 async def admin_page(request: Request):
+    """Admin dashboard"""
     stats = await get_system_stats()
-    import_status = await get_last_import_status()
+    
+    # Get recent uploads
+    uploads = await app.db.uploads.find().sort("created_at", -1).limit(10).to_list(10)
+    
+    # Convert ObjectId to string for each upload
+    for upload in uploads:
+        upload['_id'] = str(upload['_id'])
+    
     return templates.TemplateResponse(
         "admin.html",
-        {"request": request, "stats": stats, "import_status": import_status}
+        {
+            "request": request,
+            "stats": stats,
+            "uploads": uploads
+        }
     )
+
+@app.post("/admin/import/{upload_id}")
+async def start_import(request: Request, upload_id: str):
+    """Start importing a previously uploaded file"""
+    try:
+        db = request.app.db
+        upload_id = ObjectId(upload_id)
+        upload = await db.uploads.find_one({"_id": upload_id})
+        
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+            
+        # Only allow starting import if file is in a valid state
+        valid_states = ["UPLOADED", "cancelled", "error"]
+        if upload["status"] not in valid_states:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot start import for file in state: {upload['status']}. Must be one of: {', '.join(valid_states)}"
+            )
+            
+        # Update status to importing
+        await db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {"status": "IMPORTING", "error": None, "progress": None}}
+        )
+        
+        # Start import in background
+        asyncio.create_task(
+            import_data.import_slack_export(
+                db=db,
+                file_path=Path(upload["file_path"]),
+                upload_id=upload_id
+            )
+        )
+        
+        return {"status": "Import started"}
+        
+    except Exception as e:
+        logger.exception("Error starting import")
+        await db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {"status": "error", "error": str(e)}}
+        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def get_system_stats() -> Dict[str, int]:
     """Get system-wide statistics"""
     stats = {
-        "total_messages": await db.messages.count_documents({}),
-        "total_channels": await db.conversations.count_documents({"type": {"$in": ["Channel", "Private Channel"]}}),
-        "total_users": await db.conversations.count_documents({"type": {"$in": ["Multi-Party Direct Message", "Direct Message", "dm", "Phone call"]}})
+        "total_messages": await app.db.messages.count_documents({}),
+        "total_channels": await app.db.conversations.count_documents({"type": {"$in": ["Channel", "Private Channel"]}}),
+        "total_users": await app.db.conversations.count_documents({"type": {"$in": ["Multi-Party Direct Message", "Direct Message", "dm", "Phone call"]}})
     }
     return stats
 
 async def get_last_import_status() -> Dict[str, Any]:
     """Get status of the last import"""
-    status = await db.import_status.find_one(
+    status = await app.db.import_status.find_one(
         sort=[("timestamp", -1)]
     )
     return status
@@ -298,7 +361,7 @@ async def import_new_messages(request: Request):
         new_messages = await import_data.import_new_messages()
         
         # Record import status
-        await db.import_status.insert_one({
+        await app.db.import_status.insert_one({
             "timestamp": datetime.now(),
             "messages_imported": new_messages,
             "status": "success"
@@ -321,9 +384,9 @@ async def flush_data(request: Request):
     """Delete all imported data"""
     try:
         # Drop all collections
-        await db.messages.drop()
-        await db.conversations.drop()
-        await db.import_status.drop()
+        await app.db.messages.drop()
+        await app.db.conversations.drop()
+        await app.db.import_status.drop()
         
         return RedirectResponse(
             url="/admin",
@@ -336,3 +399,177 @@ async def flush_data(request: Request):
             url="/admin?error=flush_failed",
             status_code=303
         )
+
+@app.post("/admin/clear")
+async def clear_data(request: Request):
+    """Clear selected data types"""
+    try:
+        form = await request.form()
+        clear_messages = form.get("clear_messages") == "on"
+        clear_embeddings = form.get("clear_embeddings") == "on"
+        clear_uploads = form.get("clear_uploads") == "on"
+        
+        if clear_messages:
+            await app.db.messages.drop()
+            print("Cleared messages")
+            
+        if clear_embeddings:
+            # Clear Chroma collection
+            await embedding_service.clear_collection()
+            print("Cleared embeddings")
+            
+        if clear_uploads:
+            await app.db.uploads.drop()
+            # Clear upload directory
+            upload_dir = Path("/data/uploads")
+            if upload_dir.exists():
+                for f in upload_dir.glob("*"):
+                    if f.is_file():
+                        f.unlink()
+            # Clear extract directory
+            extract_dir = Path("/data/extracts")
+            if extract_dir.exists():
+                for f in extract_dir.glob("*"):
+                    if f.is_dir():
+                        shutil.rmtree(f)
+            print("Cleared uploads")
+            
+        return RedirectResponse(
+            url="/admin",
+            status_code=303
+        )
+    except Exception as e:
+        logging.error(f"Clear failed: {str(e)}")
+        return RedirectResponse(
+            url=f"/admin?error=clear_failed&message={str(e)}",
+            status_code=303
+        )
+
+@app.post("/admin/cancel_import/{upload_id}")
+async def cancel_import(request: Request, upload_id: str):
+    """Cancel a stuck import"""
+    try:
+        # Update upload status to cancelled
+        result = await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "updated_at": datetime.utcnow(),
+                    "error": "Import cancelled by user"
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Upload not found")
+            
+        return RedirectResponse(
+            url="/admin",
+            status_code=303
+        )
+    except Exception as e:
+        logging.error(f"Cancel import failed: {str(e)}")
+        return RedirectResponse(
+            url=f"/admin?error=cancel_failed&message={str(e)}",
+            status_code=303
+        )
+
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+@app.post("/admin/upload")
+async def upload_file(request: Request, file: UploadFile = File(...)):
+    """Handle file upload"""
+    try:
+        logging.info(f"Starting upload of {file.filename}")
+        
+        # Validate file
+        if not file.filename or not file.filename.lower().endswith('.zip'):
+            raise HTTPException(status_code=400, detail="Only ZIP files are allowed")
+        
+        # Create upload record
+        upload_id = ObjectId()
+        await app.db.uploads.insert_one({
+            "_id": upload_id,
+            "filename": file.filename,
+            "status": "UPLOADING",
+            "created_at": datetime.utcnow(),
+            "size": 0,
+            "uploaded_size": 0
+        })
+        
+        logging.info(f"Created upload record with ID {upload_id}")
+        
+        # Ensure upload directory exists
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        
+        # Save file with unique name to avoid conflicts
+        safe_filename = f"{upload_id}_{secure_filename(file.filename)}"
+        file_path = os.path.join(UPLOAD_DIR, safe_filename)
+        
+        # Save file in chunks to handle large files
+        total_size = 0
+        last_update = 0
+        
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)  # 8MB chunks
+                if not chunk:
+                    break
+                    
+                buffer.write(chunk)
+                total_size += len(chunk)
+                
+                # Only update DB every 100MB to reduce load
+                if total_size - last_update > 100 * 1024 * 1024:
+                    await app.db.uploads.update_one(
+                        {"_id": upload_id},
+                        {
+                            "$set": {
+                                "uploaded_size": total_size,
+                                "size": total_size
+                            }
+                        }
+                    )
+                    last_update = total_size
+                    logging.info(f"Uploaded {total_size} bytes")
+        
+        # Update final status
+        await app.db.uploads.update_one(
+            {"_id": upload_id},
+            {
+                "$set": {
+                    "status": "UPLOADED",
+                    "size": total_size,
+                    "uploaded_size": total_size,
+                    "updated_at": datetime.utcnow(),
+                    "file_path": file_path
+                }
+            }
+        )
+        
+        logging.info(f"Upload complete: {total_size} bytes")
+        
+        return JSONResponse({
+            "id": str(upload_id),
+            "status": "UPLOADED",
+            "size": total_size
+        })
+        
+    except Exception as e:
+        logging.error(f"Upload error: {str(e)}", exc_info=True)
+        # Try to clean up failed upload
+        try:
+            if 'file_path' in locals():
+                os.unlink(file_path)
+        except:
+            pass
+        try:
+            if 'upload_id' in locals():
+                await app.db.uploads.update_one(
+                    {"_id": upload_id},
+                    {"$set": {"status": "ERROR", "error": str(e)}}
+                )
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
