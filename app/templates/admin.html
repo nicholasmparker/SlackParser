@@ -91,10 +91,11 @@
                                     <span class="badge bg-info mb-1">{{ upload.status | title }}</span>
                                     {% if upload.progress %}
                                     <div class="progress" style="height: 4px;">
-                                        <div class="progress-bar progress-bar-striped {% if upload.progress_percent < 100 %}progress-bar-animated{% endif %}" 
+                                        {% set percent = upload.get('progress_percent', 0) %}
+                                        <div class="progress-bar progress-bar-striped {% if percent < 100 %}progress-bar-animated{% endif %}" 
                                              role="progressbar" 
-                                             style="width: {{ upload.progress_percent if upload.progress_percent is not none else 0 }}%"
-                                             aria-valuenow="{{ upload.progress_percent if upload.progress_percent is not none else 0 }}"
+                                             style="width: {{ percent }}%"
+                                             aria-valuenow="{{ percent }}"
                                              aria-valuemin="0"
                                              aria-valuemax="100"></div>
                                     </div>

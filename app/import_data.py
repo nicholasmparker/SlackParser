@@ -5,6 +5,7 @@ from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 from pathlib import Path
+from typing import Dict, Any, List, Optional
 import time
 import json
 from app.embeddings import EmbeddingService
