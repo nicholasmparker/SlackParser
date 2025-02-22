@@ -337,6 +337,23 @@ async def start_import(request: Request, upload_id: str):
         )
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/admin/import/{upload_id}/status")
+async def get_import_status(upload_id: str):
+    """Get the status of an import"""
+    try:
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+        
+        return {
+            "status": upload.get("status", "unknown"),
+            "progress": upload.get("progress", ""),
+            "error": upload.get("error", "")
+        }
+    except Exception as e:
+        logger.error(f"Error getting import status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def get_system_stats() -> Dict[str, int]:
     """Get system-wide statistics"""
     stats = {

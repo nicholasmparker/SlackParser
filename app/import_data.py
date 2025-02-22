@@ -10,6 +10,10 @@ import json
 from app.embeddings import EmbeddingService
 import argparse
 from bson import ObjectId
+import zipfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Constants
 DATA_DIR = os.getenv("DATA_DIR", "data")
@@ -404,7 +408,38 @@ async def update_chroma_embeddings(db):
     if new_messages_for_embedding:
         await embedding_service.add_messages(new_messages_for_embedding)
 
-async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id: str):
+def get_zip_total_size(zip_path: str) -> int:
+    """Get the total uncompressed size of all files in the ZIP"""
+    total = 0
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for info in zip_ref.infolist():
+            total += info.file_size
+    return total
+
+async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, upload_id: str):
+    """Extract ZIP file with progress updates"""
+    total_size = get_zip_total_size(zip_path)
+    extracted_size = 0
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            zip_ref.extract(file_info, extract_dir)
+            extracted_size += file_info.file_size
+            percent = int((extracted_size / total_size) * 100)
+            
+            # Update progress every 5%
+            if percent % 5 == 0:
+                await db.uploads.update_one(
+                    {"_id": ObjectId(upload_id)},
+                    {"$set": {
+                        "status": "extracting",
+                        "progress": f"Extracting ZIP file... {percent}% complete",
+                        "progress_percent": percent,
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
+
+async def import_slack_export(db: Any, file_path: Path, upload_id: str):
     """Import a Slack export ZIP file"""
     try:
         print(f"Starting import of {file_path}")
@@ -420,13 +455,14 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             {"_id": ObjectId(upload_id)},
             {"$set": {
                 "status": "extracting",
-                "progress": "Extracting ZIP file...",
+                "progress": "Starting ZIP extraction...",
+                "progress_percent": 0,
                 "updated_at": datetime.utcnow()
             }}
         )
         
         print(f"Extracting to {extract_dir}")
-        shutil.unpack_archive(file_path, extract_dir, 'zip')
+        await extract_with_progress(db, str(file_path), extract_dir, upload_id)
         
         # Update status to importing channels
         await db.uploads.update_one(
@@ -434,6 +470,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             {"$set": {
                 "status": "importing_channels",
                 "progress": "Starting channel import...",
+                "progress_percent": 0,
                 "updated_at": datetime.utcnow()
             }}
         )
@@ -457,6 +494,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
                         {"_id": ObjectId(upload_id)},
                         {"$set": {
                             "progress": f"Processing channel {channel_count}/{total_channels}: {channel_dir.name}",
+                            "progress_percent": int((channel_count / total_channels) * 100),
                             "updated_at": datetime.utcnow()
                         }}
                     )
@@ -483,6 +521,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
                         {"_id": ObjectId(upload_id)},
                         {"$set": {
                             "progress": f"Processing DM {dm_count}/{total_dms}: {dm_dir.name}",
+                            "progress_percent": int((dm_count / total_dms) * 100),
                             "updated_at": datetime.utcnow()
                         }}
                     )
@@ -497,6 +536,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             {"$set": {
                 "status": "generating_embeddings",
                 "progress": "Generating embeddings...",
+                "progress_percent": 0,
                 "updated_at": datetime.utcnow()
             }}
         )
@@ -509,6 +549,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             {"$set": {
                 "status": "complete",
                 "progress": f"Imported {channel_count} channels and {dm_count} DMs with {message_count} total messages",
+                "progress_percent": 100,
                 "updated_at": datetime.utcnow()
             }}
         )
