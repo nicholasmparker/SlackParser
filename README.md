@@ -1,6 +1,6 @@
 # 🚀 Slack Export Viewer
 
-A beautiful, modern web application for viewing and searching your Slack workspace exports. Built with FastAPI, MongoDB, and styled to match Slack's sleek design.
+A beautiful, modern web application for viewing and searching your Slack workspace exports. Built with FastAPI, MongoDB, and styled to match Slack's design.
 
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688.svg)
@@ -117,7 +117,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙏 Acknowledgments
 - Built with [FastAPI](https://fastapi.tiangolo.com/)
 - Styled with [Tailwind CSS](https://tailwindcss.com/)
-- Inspired by Slack's beautiful design
 
 ---
 Made with ❤️ for making Slack exports actually usable
