@@ -266,7 +266,7 @@ async def import_conversations():
                 # For channels, use the directory name as both ID and name
                 metadata = {
                     '_id': channel,
-                    'name': channel,
+                    'name': channel,  # Always set name to directory name
                     'type': 'channel'
                 }
                 conversations.append(metadata)
@@ -284,13 +284,12 @@ async def import_conversations():
         for dm in os.listdir(dms_dir):
             dm_path = os.path.join(dms_dir, dm)
             if os.path.isdir(dm_path):
-                # For DMs, use the directory name as ID and format participants for display
-                participants = dm.split('-')
+                # For DMs, use the directory name as both ID and name
                 metadata = {
                     '_id': dm,
-                    'name': ', '.join(participants),
+                    'name': dm,  # Always set name to directory name
                     'type': 'dm',
-                    'participants': participants
+                    'participants': dm.split('-')
                 }
                 conversations.append(metadata)
                 

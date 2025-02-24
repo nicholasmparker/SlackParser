@@ -15,6 +15,7 @@ from fastapi import status
 from werkzeug.utils import secure_filename
 import asyncio
 import shutil
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -44,30 +45,49 @@ def timedelta_filter(value):
     if not value:
         return ""
     try:
+        # Handle both ISO format strings and Unix timestamps
         if isinstance(value, str):
-            value = datetime.fromisoformat(value)
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                # Try parsing as Unix timestamp
+                value = datetime.fromtimestamp(float(value))
+        elif isinstance(value, (int, float)):
+            value = datetime.fromtimestamp(float(value))
+            
         now = datetime.now(value.tzinfo)
         delta = now - value
         if delta.days > 365:
             years = delta.days // 365
-            return f"{years} year{'s' if years != 1 else ''} ago"
+            return f"{years}y ago"
         elif delta.days > 30:
             months = delta.days // 30
-            return f"{months} month{'s' if months != 1 else ''} ago"
+            return f"{months}mo ago"
         elif delta.days > 0:
-            return f"{delta.days} day{'s' if delta.days != 1 else ''} ago"
+            return f"{delta.days}d ago"
         elif delta.seconds > 3600:
             hours = delta.seconds // 3600
-            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+            return f"{hours}h ago"
         elif delta.seconds > 60:
             minutes = delta.seconds // 60
-            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+            return f"{minutes}m ago"
         else:
             return "just now"
-    except Exception:
-        return ""
+    except Exception as e:
+        logger.error(f"Error formatting timestamp: {e}")
+        return str(value)
+
+def from_json_filter(value):
+    """Parse a JSON string into a Python object"""
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except:
+        return None
 
 templates.env.filters["timedelta"] = timedelta_filter
+templates.env.filters["from_json"] = from_json_filter
 
 # Initialize embedding service
 async def init_embedding_service():
@@ -95,11 +115,22 @@ async def shutdown_db_client():
 
 # Ensure text search index exists
 async def setup_indexes():
-    await app.db.messages.create_index([("text", "text")])
+    """Create necessary database indexes"""
+    try:
+        # Create text index on messages collection
+        await app.db.messages.create_index([("text", "text")])
+        # Create index on conversation_id for faster lookups
+        await app.db.messages.create_index("conversation_id")
+        # Create index on ts for sorting
+        await app.db.messages.create_index("ts")
+        print("Created database indexes")
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection and create indexes"""
+    await startup_db_client()
     await setup_indexes()
     await init_embedding_service()
 
@@ -138,8 +169,35 @@ async def view_conversation(
 ):
     page_size = 50
     
-    # Get conversation metadata
-    conversation = await app.db.conversations.find_one({"_id": conversation_id})
+    # Get conversation metadata with display name
+    pipeline = [
+        {"$match": {"_id": conversation_id}},
+        {"$project": {
+            "_id": 1,
+            "type": 1,
+            "name": 1,
+            "display_name": {
+                "$cond": {
+                    "if": {"$eq": ["$type", "dm"]},
+                    "then": {
+                        "$reduce": {
+                            "input": {"$split": ["$name", "-"]},
+                            "initialValue": "",
+                            "in": {
+                                "$cond": {
+                                    "if": {"$eq": ["$$value", ""]},
+                                    "then": "$$this",
+                                    "else": {"$concat": ["$$value", ", ", "$$this"]}
+                                }
+                            }
+                        }
+                    },
+                    "else": {"$concat": ["#", "$name"]}
+                }
+            }
+        }}
+    ]
+    conversation = await app.db.conversations.aggregate(pipeline).next()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
@@ -188,6 +246,104 @@ async def view_conversation(
         }
     )
 
+@app.get("/conversations", response_class=HTMLResponse)
+async def conversations(
+    request: Request,
+    page: int = Query(1, ge=1),
+    q: str = "",
+    type: str = "all"
+):
+    """List all conversations with pagination and filtering"""
+    page_size = 20
+    skip = (page - 1) * page_size
+    
+    # Build query
+    query = {}
+    if q:
+        query["name"] = {"$regex": q, "$options": "i"}
+    if type != "all":
+        query["type"] = type
+        
+    # Get conversations with users for DMs
+    pipeline = [
+        {"$match": query},
+        {"$project": {
+            "_id": 1,
+            "name": 1,
+            "type": 1,
+            "display_name": {
+                "$cond": {
+                    "if": {"$eq": ["$type", "dm"]},
+                    "then": {
+                        "$reduce": {
+                            "input": {"$split": ["$name", "-"]},
+                            "initialValue": "",
+                            "in": {
+                                "$cond": {
+                                    "if": {"$eq": ["$$value", ""]},
+                                    "then": "$$this",
+                                    "else": {"$concat": ["$$value", ", ", "$$this"]}
+                                }
+                            }
+                        }
+                    },
+                    "else": {"$concat": ["#", "$name"]}
+                }
+            }
+        }},
+        {"$sort": {"name": 1}},
+        {"$skip": skip},
+        {"$limit": page_size}
+    ]
+    conversations = await app.db.conversations.aggregate(pipeline).to_list(page_size)
+
+    # Get message counts in bulk
+    conversation_ids = [c["_id"] for c in conversations]
+    message_counts = await app.db.messages.aggregate([
+        {"$match": {"conversation_id": {"$in": conversation_ids}}},
+        {"$group": {
+            "_id": "$conversation_id",
+            "count": {"$sum": 1},
+            "latest_ts": {"$max": "$ts"},
+            "latest_text": {"$last": "$text"},
+            "latest_user": {"$last": "$user"}
+        }}
+    ]).to_list(None)
+    
+    # Convert to dict for O(1) lookup
+    message_data = {str(m["_id"]): m for m in message_counts}
+    
+    # Merge data
+    for conv in conversations:
+        conv_id = str(conv["_id"])
+        if conv_id in message_data:
+            data = message_data[conv_id]
+            conv["message_count"] = data["count"]
+            conv["latest_message"] = {
+                "ts": data["latest_ts"],
+                "text": data["latest_text"],
+                "user": data["latest_user"]
+            }
+        else:
+            conv["message_count"] = 0
+            conv["latest_message"] = None
+    
+    # Get total count for pagination
+    total = await app.db.conversations.count_documents(query)
+    total_pages = (total + page_size - 1) // page_size
+    
+    return templates.TemplateResponse(
+        "conversations.html",
+        {
+            "request": request,
+            "conversations": conversations,
+            "page": page,
+            "total_pages": total_pages,
+            "q": q,
+            "type": type
+        }
+    )
+
 @app.get("/files", response_class=HTMLResponse)
 async def files(request: Request, q: str = ""):
     # Build query
@@ -205,31 +361,47 @@ async def files(request: Request, q: str = ""):
     })
 
 @app.get("/search")
-async def search(request: Request, q: str = ""):
-    """Render search page or perform search"""
-    if not q:
-        return templates.TemplateResponse("search.html", {
+async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
+    results = []
+    if q:
+        # Perform search
+        results = await app.db.messages.find(
+            {
+                "$text": {
+                    "$search": q
+                }
+            },
+            {
+                "score": {"$meta": "textScore"},
+                "text": 1,
+                "user": 1,
+                "ts": 1,
+                "conversation_id": 1
+            }
+        ).sort([("score", {"$meta": "textScore"})]).limit(50).to_list(50)
+
+        # Get conversation details for each result
+        conversation_ids = list(set(r["conversation_id"] for r in results))
+        conversations = await app.db.conversations.find(
+            {"_id": {"$in": conversation_ids}},
+            {"name": 1, "type": 1}
+        ).to_list(None)
+        conv_map = {str(c["_id"]): c for c in conversations}
+
+        # Attach conversation info to results
+        for r in results:
+            r["conversation"] = conv_map.get(str(r["conversation_id"]), {"name": "Unknown", "type": "unknown"})
+            r["ts"] = float(r["ts"])
+
+    return templates.TemplateResponse(
+        "search.html",
+        {
             "request": request,
-            "results": [],
-            "query": ""
-        })
-    
-    # Search messages
-    results = await app.db.messages.find(
-        {"$text": {"$search": q}},
-        {"score": {"$meta": "textScore"}}
-    ).sort([("score", {"$meta": "textScore"})]).to_list(length=50)
-    
-    # Get conversation details for each message
-    for result in results:
-        conversation = await app.db.conversations.find_one({"_id": result["conversation_id"]})
-        result["conversation"] = conversation
-    
-    return templates.TemplateResponse("search.html", {
-        "request": request,
-        "results": results,
-        "query": q
-    })
+            "query": q,
+            "hybrid_alpha": hybrid_alpha,
+            "results": results
+        }
+    )
 
 @app.post("/search")
 async def semantic_search(
@@ -278,11 +450,12 @@ async def admin_page(request: Request):
     stats = await get_system_stats()
     
     # Get recent uploads
-    uploads = await app.db.uploads.find().sort("created_at", -1).limit(10).to_list(10)
-    
-    # Convert ObjectId to string for each upload
-    for upload in uploads:
-        upload['_id'] = str(upload['_id'])
+    uploads = []
+    async for upload in app.db.uploads.find().sort("created_at", -1):
+        upload["_id"] = str(upload["_id"])
+        # Debug logging
+        print(f"Upload: {upload}")
+        uploads.append(upload)
     
     return templates.TemplateResponse(
         "admin.html",
@@ -305,27 +478,68 @@ async def start_import(request: Request, upload_id: str):
             raise HTTPException(status_code=404, detail="Upload not found")
             
         # Only allow starting import if file is in a valid state
-        valid_states = ["UPLOADED", "cancelled", "error"]
+        valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING"]
         if upload["status"] not in valid_states:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Cannot start import for file in state: {upload['status']}. Must be one of: {', '.join(valid_states)}"
             )
             
-        # Update status to importing
+        # Allow reimport if previous import had 0 messages or failed
+        if upload["status"] == "complete":
+            if upload.get("progress") and "Imported 0" not in upload["progress"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot reimport file that has already been successfully imported"
+                )
+        
+        # Reset import state
         await db.uploads.update_one(
             {"_id": upload_id},
-            {"$set": {"status": "IMPORTING", "error": None, "progress": None}}
+            {"$set": {
+                "status": "extracting",
+                "error": None,
+                "progress": "Starting ZIP extraction...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
         )
         
         # Start import in background
-        asyncio.create_task(
+        print(f"Creating background task for import of {upload['filename']}")
+        task = asyncio.create_task(
             import_data.import_slack_export(
                 db=db,
                 file_path=Path(upload["file_path"]),
-                upload_id=upload_id
+                upload_id=str(upload_id)  # Convert ObjectId to string
             )
         )
+        
+        # Add error handling for the background task
+        def handle_import_completion(task):
+            try:
+                result = task.result()
+                print(f"Import task completed successfully: {result}")
+            except asyncio.CancelledError:
+                print("Import task was cancelled")
+            except Exception as e:
+                print(f"Import task failed with error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+                # Update upload status on error
+                async def update_error():
+                    await db.uploads.update_one(
+                        {"_id": upload_id},
+                        {"$set": {
+                            "status": "error",
+                            "error": str(e),
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                asyncio.create_task(update_error())
+        
+        task.add_done_callback(handle_import_completion)
         
         return {"status": "Import started"}
         
@@ -354,11 +568,61 @@ async def get_import_status(upload_id: str):
         logger.error(f"Error getting import status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/admin/import/{upload_id}/cancel")
+async def cancel_import(request: Request, upload_id: str):
+    """Cancel a stuck import"""
+    try:
+        db = request.app.db
+        upload_id = ObjectId(upload_id)
+        upload = await db.uploads.find_one({"_id": upload_id})
+        
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+            
+        # Only allow cancelling if in an active state
+        active_states = ["extracting", "importing_channels", "importing_dms", "generating_embeddings", "IMPORTING"]
+        if upload["status"] not in active_states:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel import that is not in progress. Current status: {upload['status']}"
+            )
+            
+        # Update status to cancelled
+        await db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "cancelled",
+                "error": None,
+                "progress": "Import cancelled by user",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        return {"status": "cancelled"}
+        
+    except Exception as e:
+        logger.exception("Error cancelling import")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/conversations")
+async def debug_conversations():
+    """Debug endpoint to view raw conversation data"""
+    conversations = await app.db.conversations.find({}).to_list(10)
+    # Convert datetime objects to strings
+    for conv in conversations:
+        if "created" in conv and isinstance(conv["created"], datetime):
+            conv["created"] = conv["created"].isoformat()
+        # Convert ObjectId to string
+        if "_id" in conv:
+            conv["_id"] = str(conv["_id"])
+    return JSONResponse(content={"conversations": conversations})
+
 async def get_system_stats() -> Dict[str, int]:
     """Get system-wide statistics"""
     stats = {
         "total_messages": await app.db.messages.count_documents({}),
-        "total_channels": await app.db.conversations.count_documents({"type": {"$in": ["Channel", "Private Channel"]}}),
+        "total_channels": await app.db.conversations.count_documents({"type": "channel"}),
         "total_users": await app.db.conversations.count_documents({"type": {"$in": ["Multi-Party Direct Message", "Direct Message", "dm", "Phone call"]}})
     }
     return stats
@@ -459,36 +723,6 @@ async def clear_data(request: Request):
         logging.error(f"Clear failed: {str(e)}")
         return RedirectResponse(
             url=f"/admin?error=clear_failed&message={str(e)}",
-            status_code=303
-        )
-
-@app.post("/admin/cancel_import/{upload_id}")
-async def cancel_import(request: Request, upload_id: str):
-    """Cancel a stuck import"""
-    try:
-        # Update upload status to cancelled
-        result = await app.db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {
-                "$set": {
-                    "status": "cancelled",
-                    "updated_at": datetime.utcnow(),
-                    "error": "Import cancelled by user"
-                }
-            }
-        )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Upload not found")
-            
-        return RedirectResponse(
-            url="/admin",
-            status_code=303
-        )
-    except Exception as e:
-        logging.error(f"Cancel import failed: {str(e)}")
-        return RedirectResponse(
-            url=f"/admin?error=cancel_failed&message={str(e)}",
             status_code=303
         )
 
