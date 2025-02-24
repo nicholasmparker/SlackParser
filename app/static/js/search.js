@@ -1,9 +1,12 @@
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('Search JS loaded');
     const searchForm = document.getElementById('searchForm');
     const searchResults = document.getElementById('searchResults');
     const searchLoading = document.getElementById('searchLoading');
     const hybridAlpha = document.getElementById('hybrid_alpha');
     const hybridValue = document.getElementById('hybrid_value');
+    
+    console.log('Form element:', searchForm);
     
     if (hybridAlpha) {
         // Update hybrid search balance value
@@ -18,16 +21,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     if (searchForm) {
+        console.log('Adding submit handler');
         searchForm.addEventListener('submit', async function(e) {
+            console.log('Form submitted');
             e.preventDefault();
+            e.stopPropagation();
             
             // Show loading state
             if (searchResults) searchResults.style.display = 'none';
-            if (searchLoading) searchLoading.style.display = 'block';
+            if (searchLoading) searchLoading.classList.remove('d-none');
             
             // Get form data
             const query = document.getElementById('query').value;
             const hybrid_alpha = document.getElementById('hybrid_alpha')?.value || 0.5;
+            
+            console.log('Searching:', query, hybrid_alpha);
             
             try {
                 // Make search request
@@ -109,7 +117,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             } finally {
                 // Hide loading state
-                if (searchLoading) searchLoading.style.display = 'none';
+                if (searchLoading) searchLoading.classList.add('d-none');
                 if (searchResults) searchResults.style.display = 'block';
             }
         });

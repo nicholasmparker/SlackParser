@@ -35,7 +35,8 @@ MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 BASE_DIR = Path(__file__).resolve().parent
 
 # Setup static files and templates
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+static_dir = BASE_DIR / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 app.mount("/files", StaticFiles(directory=FILE_STORAGE, html=True), name="files")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -368,6 +369,11 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
     results = []
     if q:
         try:
+            # Initialize embeddings service if not already initialized
+            if not app.embeddings:
+                app.embeddings = EmbeddingService()
+                await app.embeddings.initialize()
+            
             # Perform semantic search
             search_results = await app.embeddings.search(
                 query=q,
@@ -863,6 +869,77 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             pass
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/search")
+async def api_search(
+    query: str = Body(...),
+    hybrid_alpha: float = Body(0.5),
+    limit: int = Body(50)
+):
+    try:
+        logger.info(f"API Search request: query={query}, hybrid_alpha={hybrid_alpha}, limit={limit}")
+        
+        # Initialize embeddings service if not already initialized
+        if not hasattr(app, 'embeddings') or not app.embeddings:
+            logger.info("Initializing embeddings service")
+            app.embeddings = EmbeddingService()
+            await app.embeddings.initialize()
+        
+        # Perform semantic search
+        logger.info("Performing semantic search")
+        search_results = await app.embeddings.search(
+            query=query,
+            limit=limit,
+            hybrid_alpha=hybrid_alpha
+        )
+        
+        # Extract conversation IDs from results, skipping any without conversation_id
+        logger.info(f"Got {len(search_results)} results")
+        conversation_ids = list(set(
+            r["metadata"]["conversation_id"] 
+            for r in search_results 
+            if "metadata" in r and "conversation_id" in r["metadata"]
+        ))
+        
+        # Get conversation details
+        conversations = await app.db.conversations.find(
+            {"_id": {"$in": conversation_ids}},
+            {"name": 1, "type": 1}
+        ).to_list(None)
+        conv_map = {str(c["_id"]): c for c in conversations}
+        
+        # Format results for template
+        results = []
+        for r in search_results:
+            # Skip results without proper metadata
+            if "metadata" not in r or "conversation_id" not in r["metadata"]:
+                logger.warning(f"Skipping result without proper metadata: {r}")
+                continue
+                
+            try:
+                ts = float(r["metadata"]["timestamp"]) if r["metadata"]["timestamp"] and r["metadata"]["timestamp"].replace('.','').isdigit() else 0
+            except (ValueError, TypeError):
+                ts = 0
+                logger.warning(f"Could not parse timestamp: {r['metadata']['timestamp']}")
+            
+            results.append({
+                "text": r["text"],
+                "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
+                "conversation_id": r["metadata"]["conversation_id"],
+                "user": r["metadata"].get("user", "unknown"),
+                "ts": ts,
+                "score": r["similarity"],
+                "keyword_match": r.get("keyword_match", False)
+            })
+        
+        # Sort results by score
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        logger.info("Search completed successfully")
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error in api_search: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/admin/embeddings/train/{upload_id}")
 async def train_embeddings(request: Request, upload_id: str):
     """Train embeddings for all messages from an import"""
@@ -974,34 +1051,4 @@ async def reset_embeddings(request: Request, upload_id: str):
         
     except Exception as e:
         logger.error(f"Error resetting embeddings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/search")
-async def search_messages(
-    query: str = Body(...),
-    limit: int = Body(10),
-    hybrid_alpha: float = Body(0.5),
-    filter_channels: Optional[List[str]] = Body(None),
-    filter_users: Optional[List[str]] = Body(None),
-    filter_has_files: Optional[bool] = Body(None),
-    filter_has_reactions: Optional[bool] = Body(None),
-    filter_in_thread: Optional[bool] = Body(None),
-    filter_date_range: Optional[tuple[datetime, datetime]] = Body(None)
-):
-    """Search for messages using hybrid semantic + keyword search"""
-    try:
-        results = await app.embeddings.search(
-            query=query,
-            limit=limit,
-            hybrid_alpha=hybrid_alpha,
-            filter_channels=filter_channels,
-            filter_users=filter_users,
-            filter_has_files=filter_has_files,
-            filter_has_reactions=filter_has_reactions,
-            filter_in_thread=filter_in_thread,
-            filter_date_range=filter_date_range
-        )
-        return {"results": results}
-    except Exception as e:
-        logger.error(f"Error searching messages: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -341,9 +341,13 @@ class EmbeddingService:
                         if semantic_results["documents"][0][i].strip().lower() == "test message":
                             continue
                             
+                        # Debug log metadata fields
+                        metadata = semantic_results["metadatas"][0][i]
+                        logger.info(f"Metadata fields: {list(metadata.keys())}")
+                            
                         all_results.append({
                             "text": semantic_results["documents"][0][i],
-                            "metadata": semantic_results["metadatas"][0][i],
+                            "metadata": metadata,
                             "similarity": hybrid_alpha * (1 - semantic_results["distances"][0][i]),  # Weight semantic score by alpha
                             "keyword_match": False
                         })
