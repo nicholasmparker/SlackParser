@@ -45,51 +45,47 @@ async def wait_for_mongodb():
             await asyncio.sleep(retry_delay)
 
 async def parse_message(line):
-    # Parse message line format: [YYYY-MM-DD HH:MM:SS UTC] <username> message
-    match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)\] <([^>]+)> (.*)', line)
-    if match:
-        timestamp_str, username, text = match.groups()
-        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S UTC')
-        return {
-            'ts': f"{timestamp.timestamp():.1f}",  # Format with one decimal place
-            'timestamp': timestamp,
-            'user': username,
-            'text': text.strip()
-        }
+    """Parse a message line from the new Slack export format
     
-    # Handle file shares
-    file_share = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)\] <([^>]+)> shared file\(s\) (.*)', line)
-    if file_share:
-        timestamp_str, username, file_info = file_share.groups()
-        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S UTC')
+    Format: [TIMESTAMP UTC] <USER> MESSAGE
+    Example: [2023-07-06 22:51:43 UTC] <diane> Message text
+    """
+    try:
+        # Extract timestamp
+        timestamp_match = re.match(r'\[(.*?) UTC\]', line)
+        if not timestamp_match:
+            return None
+        timestamp_str = timestamp_match.group(1)
+        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+        ts = timestamp.timestamp()
+        
+        # Extract user and message
+        remaining = line[line.index(']')+1:].strip()
+        user_match = re.match(r'<(.+?)> (.*)', remaining)
+        if not user_match:
+            return None
+        user = user_match.group(1)
+        text = user_match.group(2)
+        
         return {
-            'ts': f"{timestamp.timestamp():.1f}",  # Format with one decimal place
+            'ts': str(ts),
             'timestamp': timestamp,
-            'user': username,
-            'type': 'file_share',
-            'file_info': file_info.strip()
+            'user': user,
+            'text': text,
+            'type': 'message'
         }
-    
-    # Handle user joins
-    join = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)\] (.*) joined the channel', line)
-    if join:
-        timestamp_str, username = join.groups()
-        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S UTC')
-        return {
-            'ts': f"{timestamp.timestamp():.1f}",  # Format with one decimal place
-            'timestamp': timestamp,
-            'user': username,
-            'type': 'join'
-        }
-    
-    return None
+    except Exception as e:
+        print(f"Error parsing message line: {str(e)}")
+        print(f"Line: {line}")
+        return None
 
 async def parse_channel_metadata(lines):
+    """Parse channel metadata from the header lines"""
     metadata = {}
     for line in lines:
         line = line.strip()
         if line.startswith('Channel Name:'):
-            metadata['name'] = line.split(':', 1)[1].strip()
+            metadata['name'] = line.split(':', 1)[1].strip().lstrip('#')
         elif line.startswith('Channel ID:'):
             metadata['id'] = line.split(':', 1)[1].strip()
         elif line.startswith('Created:'):
@@ -97,6 +93,33 @@ async def parse_channel_metadata(lines):
             metadata['created'] = datetime.strptime(created_str.split(' UTC')[0], '%Y-%m-%d %H:%M:%S')
         elif line.startswith('Type:'):
             metadata['type'] = line.split(':', 1)[1].strip()
+    return metadata
+
+async def parse_dm_metadata(lines):
+    """Parse DM metadata from the header lines
+    
+    Example format:
+    Private conversation between casey, tj
+    Channel ID: D05GCTX0678
+    Created: 2023-07-11 21:17:07 UTC
+    Type: Direct Message
+    """
+    metadata = {}
+    for line in lines:
+        line = line.strip()
+        if line.startswith('Private conversation between'):
+            users = line.split('between ', 1)[1].split(', ')
+            metadata['name'] = '-'.join(users)
+        elif line.startswith('Channel ID:'):
+            metadata['id'] = line.split(':', 1)[1].strip()
+        elif line.startswith('Created:'):
+            created_str = line.split(':', 1)[1].strip()
+            try:
+                metadata['created'] = datetime.strptime(created_str.split(' UTC')[0], '%Y-%m-%d %H:%M:%S')
+            except ValueError as e:
+                print(f"Error parsing created date: {e}")
+                print(f"Line was: {line}")
+    metadata['type'] = 'dm'  # Always set type to dm
     return metadata
 
 async def parse_conversation_file(file_path, conversation_type='channel'):
@@ -159,7 +182,7 @@ async def import_slack_data():
             if os.path.isdir(channel_path):
                 print(f"Processing channel: {channel_dir}")
                 channel_file = os.path.join(channel_path, f"{channel_dir}.txt")
-                await process_channel(db, channel_path, channel_dir)
+                await process_channel(db, channel_file, channel_dir)
     
     # Create .import_complete file to indicate successful import
     with open("/data/.import_complete", "w") as f:
@@ -280,126 +303,163 @@ async def import_conversations():
     
     return conversations
 
-async def process_channel(db, channel_path, channel_dir):
-    channel_file = os.path.join(channel_path, f"{channel_dir}.txt")
-    
-    if os.path.exists(channel_file):
-        try:
-            message_count = 0
-            channel_metadata = {}
-            test_mode = os.getenv("TEST_MODE", "false").lower() == "true"
-            
-            async for item in parse_conversation_file(channel_file, 'channel'):
-                if item.get('type') == 'metadata':
-                    channel_metadata = item['data']
-                    continue
-                    
-                # Format message
-                message = {
-                    'conversation_id': channel_dir,
-                    'ts': item.get('ts'),
-                    'text': item.get('text', ''),
-                    'timestamp': item.get('timestamp'),
-                    'user': item.get('user'),
-                    'type': item.get('type', 'message')
-                }
-                
-                try:
-                    await db.messages.update_one(
-                        {'ts': message['ts'], 'conversation_id': message['conversation_id']},
-                        {'$set': message},
-                        upsert=True
-                    )
-                    message_count += 1
-                    if message_count % 100 == 0:
-                        print(f"Processed {message_count} messages from {channel_dir}")
-                    
-                    if test_mode and message_count >= 1000:
-                        print(f"Test mode: Reached 1000 messages, stopping import")
-                        break
-                        
-                except Exception as e:
-                    if not "duplicate key error" in str(e).lower():
-                        print(f"Error inserting message in {channel_dir}: {str(e)}")
-            
-            # Update conversation
-            metadata = {
-                '_id': channel_dir,
-                'name': channel_dir,  # Use directory name as display name
-                'type': 'channel',
-                'message_count': message_count
-            }
-            if channel_metadata:
-                metadata.update(channel_metadata)
-            
-            await db.conversations.update_one(
-                {'_id': metadata['_id']},
-                {'$set': metadata},
-                upsert=True
-            )
-            
-            print(f"Completed processing {message_count} messages from {channel_dir}")
-        except Exception as e:
-            print(f"Error processing channel {channel_dir}: {e}")
-            return
+async def insert_messages(db: Any, messages: List[Dict[str, Any]], batch_size=50):
+    """Insert messages into MongoDB in batches"""
+    try:
+        for i in range(0, len(messages), batch_size):
+            batch = messages[i:i + batch_size]
+            try:
+                await db.messages.insert_many(batch)
+            except Exception as e:
+                print(f"Error inserting batch: {str(e)}")
+                # If it's a duplicate key error, try inserting one at a time
+                if "duplicate key error" in str(e):
+                    print("Attempting to insert messages one at a time...")
+                    for msg in batch:
+                        try:
+                            await db.messages.insert_one(msg)
+                        except Exception as e:
+                            if "duplicate key error" not in str(e):
+                                print(f"Error inserting message: {str(e)}")
+                else:
+                    raise
+    except Exception as e:
+        print(f"Error in insert_messages: {str(e)}")
+        raise
 
-async def process_dm(db, dm_path, dm_dir):
-    dm_file = os.path.join(dm_path, f"{dm_dir}.txt")
-    
-    if os.path.exists(dm_file):
-        try:
-            message_count = 0
-            dm_metadata = {}
+async def process_channel(db: Any, channel_path: Path, channel_dir: str):
+    """Process a channel directory and import its messages"""
+    try:
+        channel_name = channel_dir
+        print(f"\nProcessing channel: {channel_name}")
+        
+        # Look for channel_name.txt in the channel directory
+        messages_file = channel_path / f"{channel_name}.txt"
+        print(f"Looking for messages file at: {messages_file}")
+        
+        if not messages_file.exists():
+            print(f"No {channel_name}.txt found in {channel_name}, skipping")
+            return 0
             
-            async for item in parse_conversation_file(dm_file, 'dm'):
-                if item.get('type') == 'metadata':
-                    dm_metadata = item['data']
+        messages = []
+        in_messages_section = False
+        metadata_lines = []
+        
+        print(f"Reading file: {messages_file}")
+        with open(messages_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
                     continue
-                    
-                # Format message
-                message = {
-                    'conversation_id': dm_dir,
-                    'ts': item.get('ts'),
-                    'text': item.get('text', ''),
-                    'timestamp': item.get('timestamp'),
-                    'user': item.get('user'),
-                    'type': item.get('type', 'message')
-                }
                 
-                try:
-                    await db.messages.update_one(
-                        {'ts': message['ts'], 'conversation_id': message['conversation_id']},
-                        {'$set': message},
+                # Collect metadata lines until we hit the Messages section
+                if line == "Messages:":
+                    in_messages_section = True
+                    print("Found Messages section, parsing metadata:", metadata_lines)
+                    # Parse and store channel metadata
+                    metadata = await parse_channel_metadata(metadata_lines)
+                    metadata['_id'] = channel_name  # Use channel name as ID for now
+                    metadata['type'] = 'channel'
+                    print(f"Channel metadata: {metadata}")
+                    
+                    # Upsert channel metadata to conversations collection
+                    await db.conversations.update_one(
+                        {"_id": metadata['_id']},
+                        {"$set": metadata},
                         upsert=True
                     )
-                    message_count += 1
-                    if message_count % 100 == 0:
-                        print(f"Processed {message_count} messages from {dm_dir}")
-                except Exception as e:
-                    if not "duplicate key error" in str(e).lower():
-                        print(f"Error inserting message in {dm_dir}: {str(e)}")
+                    print(f"Stored channel metadata for {channel_name}")
+                    continue
+                
+                if not in_messages_section:
+                    metadata_lines.append(line)
+                    continue
+                
+                # Skip date headers (lines starting with ---)
+                if line.startswith('---'):
+                    continue
+                
+                # Parse message
+                message = await parse_message(line)
+                if message:
+                    message['conversation_id'] = channel_name
+                    message['conversation_type'] = 'channel'
+                    messages.append(message)
+                    
+        if messages:
+            print(f"INFO: Processing {len(messages)} messages in batches of 50")
+            await insert_messages(db, messages)
+            return len(messages)
+        return 0
             
-            # Update conversation
-            participants = dm_dir.split('-')
-            metadata = {
-                '_id': dm_dir,
-                'name': ', '.join(participants),
-                'type': 'dm',
-                'participants': participants,
-                'message_count': message_count
-            }
-            if dm_metadata:
-                metadata.update(dm_metadata)
+    except Exception as e:
+        print(f"Error processing channel {channel_dir}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+async def process_dm(db: Any, dm_path: Path, dm_dir: str):
+    """Process a DM directory and import its messages
+    
+    Args:
+        db: MongoDB database connection
+        dm_path: Path to the DM's directory
+        dm_dir: Name of the DM directory
+    """
+    try:
+        print(f"\nProcessing DM: {dm_dir}")
+        messages_file = dm_path / f"{dm_dir}.txt"
+        
+        if not messages_file.exists():
+            print(f"No messages file found at {messages_file}")
+            return 0
             
-            await db.conversations.update_one(
-                {'_id': metadata['_id']},
-                {'$set': metadata},
-                upsert=True
-            )
+        messages = []
+        metadata_lines = []
+        in_messages_section = False
+        
+        with open(messages_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line == "Messages:":
+                    in_messages_section = True
+                    metadata = await parse_dm_metadata(metadata_lines)
+                    metadata['_id'] = dm_dir
+                    print(f"Parsed DM metadata: {metadata}")
+                    
+                    await db.conversations.update_one(
+                        {"_id": metadata['_id']},
+                        {"$set": metadata},
+                        upsert=True
+                    )
+                    continue
+                    
+                if not in_messages_section:
+                    metadata_lines.append(line)
+                    continue
+                    
+                if line.startswith('---'):
+                    continue
+                    
+                message = await parse_message(line)
+                if message:
+                    message['conversation_id'] = dm_dir
+                    message['conversation_type'] = 'dm'
+                    messages.append(message)
+                    
+        if messages:
+            print(f"Inserting {len(messages)} messages from DM {dm_dir}")
+            await insert_messages(db, messages)
+            return len(messages)
+        return 0
             
-            print(f"Completed processing {message_count} messages from {dm_dir}")
-        except Exception as e:
-            print(f"Error processing DM {dm_dir}: {str(e)}")
+    except Exception as e:
+        print(f"Error processing DM {dm_dir}: {str(e)}")
+        traceback.print_exc()
+        return 0
 
 async def update_chroma_embeddings(db):
     # Generate and store embeddings for new messages
@@ -408,6 +468,107 @@ async def update_chroma_embeddings(db):
         new_messages_for_embedding.append(msg)
     if new_messages_for_embedding:
         await embedding_service.add_messages(new_messages_for_embedding)
+
+async def import_slack_export(db: Any, file_path: Path, upload_id: str):
+    """Import a Slack export ZIP file
+    
+    Args:
+        db: MongoDB database connection
+        file_path: Path to the ZIP file
+        upload_id: ID of the upload record
+    """
+    try:
+        # Set up extract directory
+        extract_dir = Path('/data/extracted') / upload_id
+        
+        # Check if files are already extracted
+        slack_export_dir = None
+        if extract_dir.exists():
+            # Look for existing slack-export directory
+            for item in extract_dir.iterdir():
+                if item.is_dir() and ('slack-export' in item.name):
+                    slack_export_dir = item
+                    print(f"Using existing extracted files in {slack_export_dir}")
+                    break
+        
+        # Only extract if needed
+        if not slack_export_dir:
+            print(f"No extracted files found, extracting ZIP file to {extract_dir}")
+            await extract_with_progress(db, str(file_path), extract_dir, upload_id)
+            
+            # Find the slack-export directory after extraction
+            for item in extract_dir.iterdir():
+                if item.is_dir() and ('slack-export' in item.name):
+                    slack_export_dir = item
+                    break
+                    
+        if not slack_export_dir:
+            raise Exception("Could not find slack-export directory in ZIP file")
+            
+        # Process channels
+        channels_dir = slack_export_dir / 'channels'
+        if channels_dir.exists():
+            # Update status
+            await db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {"$set": {"status": "IMPORTING", "progress": "Processing channels..."}}
+            )
+            
+            # Process each channel
+            total_messages = 0
+            for channel_dir in channels_dir.iterdir():
+                if channel_dir.is_dir():
+                    messages = await process_channel(db, channel_dir, channel_dir.name)
+                    total_messages += messages
+                    
+                    # Update progress
+                    await db.uploads.update_one(
+                        {"_id": ObjectId(upload_id)},
+                        {"$set": {"progress": f"Imported {total_messages} messages..."}}
+                    )
+        else:
+            print("No channels directory found")
+            total_messages = 0
+        
+        # Process DMs
+        print("\nProcessing DMs...")
+        dms_dir = slack_export_dir / 'dms'
+        print(f"Looking for DMs directory at {dms_dir}")
+        if dms_dir.exists():
+            print(f"Found DMs directory at {dms_dir}")
+            for dm_dir in dms_dir.iterdir():
+                if dm_dir.is_dir():
+                    print(f"Found DM directory: {dm_dir}")
+                    dm_count = await process_dm(db, dm_dir, dm_dir.name)
+                    total_messages += dm_count
+                    print(f"Processed {dm_count} messages from DM {dm_dir.name}")
+        else:
+            print("No DMs directory found")
+        
+        # Mark as complete
+        await db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "status": "complete",
+                    "progress": f"Imported {total_messages} messages"
+                }
+            }
+        )
+        
+    except Exception as e:
+        print(f"Error importing Slack export: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        await db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "status": "error",
+                    "error": str(e)
+                }
+            }
+        )
 
 def get_zip_total_size(zip_path: str) -> int:
     """Get the total uncompressed size of all files in the ZIP"""
@@ -419,158 +580,67 @@ def get_zip_total_size(zip_path: str) -> int:
 
 async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, upload_id: str):
     """Extract ZIP file with progress updates"""
-    total_size = get_zip_total_size(zip_path)
-    extracted_size = 0
-    
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        for file_info in zip_ref.infolist():
-            zip_ref.extract(file_info, extract_dir)
-            extracted_size += file_info.file_size
-            percent = int((extracted_size / total_size) * 100)
-            
-            # Update progress every 5%
-            if percent % 5 == 0:
-                await db.uploads.update_one(
-                    {"_id": ObjectId(upload_id)},
-                    {"$set": {
-                        "status": "extracting",
-                        "progress": f"Extracting ZIP file... {percent}% complete",
-                        "progress_percent": percent,
-                        "updated_at": datetime.utcnow()
-                    }}
-                )
-
-async def import_slack_export(db: Any, file_path: Path, upload_id: str):
-    """Import a Slack export ZIP file"""
     try:
-        print(f"Starting import of {file_path}")
-        extract_dir = Path("/data/extracts") / file_path.stem
+        total_size = get_zip_total_size(zip_path)  
+        extracted_size = 0
+        last_update_time = time.time()
+        UPDATE_INTERVAL = 1.0  # Update progress at most once per second
         
-        # Extract the ZIP file
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-        extract_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Extracting ZIP file: {zip_path}")
+        print(f"Total uncompressed size: {total_size:,} bytes")
+        print(f"Extracting to: {extract_dir}")
         
-        # Update status to extracting
-        await db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "extracting",
-                "progress": "Starting ZIP extraction...",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
-        )
-        
-        print(f"Extracting to {extract_dir}")
-        await extract_with_progress(db, str(file_path), extract_dir, upload_id)
-        
-        # Update status to importing channels
-        await db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "importing_channels",
-                "progress": "Starting channel import...",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
-        )
-        
-        # Process channels
-        channels_dir = extract_dir / "channels"
-        channel_count = 0
-        message_count = 0
-        
-        if channels_dir.exists():
-            channel_list = list(channels_dir.iterdir())
-            total_channels = len([d for d in channel_list if d.is_dir()])
+        # Extract all files at once for better performance
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Get list of all files (not directories)
+            files_to_extract = [f for f in zip_ref.infolist() if not f.is_dir()]
             
-            for channel_dir in channel_list:
-                if channel_dir.is_dir():
-                    print(f"Processing channel: {channel_dir.name}")
-                    
-                    # Update progress
-                    channel_count += 1
+            # Extract files in batches
+            BATCH_SIZE = 100
+            for i in range(0, len(files_to_extract), BATCH_SIZE):
+                batch = files_to_extract[i:i + BATCH_SIZE]
+                
+                # Extract batch
+                for file_info in batch:
+                    zip_ref.extract(file_info, extract_dir)
+                    extracted_size += file_info.file_size
+                
+                # Update progress at most once per second
+                current_time = time.time()
+                if current_time - last_update_time >= UPDATE_INTERVAL:
+                    progress_percent = int((extracted_size / total_size) * 100) if total_size > 0 else 0
                     await db.uploads.update_one(
                         {"_id": ObjectId(upload_id)},
                         {"$set": {
-                            "progress": f"Processing channel {channel_count}/{total_channels}: {channel_dir.name}",
-                            "progress_percent": int((channel_count / total_channels) * 100),
+                            "status": "extracting",  
+                            "progress": f"Extracted {extracted_size:,} of {total_size:,} bytes ({progress_percent}%)",
+                            "progress_percent": progress_percent,
                             "updated_at": datetime.utcnow()
                         }}
                     )
-                    
-                    # Process channel
-                    channel_messages = await process_channel(db, channel_dir / "messages.json", channel_dir)
-                    message_count += channel_messages
+                    last_update_time = current_time
         
-        # Process DMs
-        dms_dir = extract_dir / "direct_messages"
-        dm_count = 0
-        
-        if dms_dir.exists():
-            dm_list = list(dms_dir.iterdir())
-            total_dms = len([d for d in dm_list if d.is_dir()])
-            
-            for dm_dir in dm_list:
-                if dm_dir.is_dir():
-                    print(f"Processing DM: {dm_dir.name}")
-                    
-                    # Update progress
-                    dm_count += 1
-                    await db.uploads.update_one(
-                        {"_id": ObjectId(upload_id)},
-                        {"$set": {
-                            "progress": f"Processing DM {dm_count}/{total_dms}: {dm_dir.name}",
-                            "progress_percent": int((dm_count / total_dms) * 100),
-                            "updated_at": datetime.utcnow()
-                        }}
-                    )
-                    
-                    # Process DM
-                    dm_messages = await process_dm(db, dm_dir / "messages.json", dm_dir)
-                    message_count += dm_messages
-        
-        # Update embeddings
+        # Final progress update
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
-                "status": "generating_embeddings",
-                "progress": "Generating embeddings...",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
-        )
-        
-        await update_chroma_embeddings(db)
-        
-        # Mark as complete
-        await db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "complete",
-                "progress": f"Imported {channel_count} channels and {dm_count} DMs with {message_count} total messages",
+                "status": "extracting",  
+                "progress": f"Extracted {extracted_size:,} of {total_size:,} bytes (100%)",
                 "progress_percent": 100,
                 "updated_at": datetime.utcnow()
             }}
         )
         
-        print(f"Import complete: {channel_count} channels, {dm_count} DMs, {message_count} messages")
-        
+        print(f"Extraction complete. Listing contents of {extract_dir}:")
+        for root, dirs, files in os.walk(extract_dir):
+            print(f"\nDirectory: {root}")
+            for d in dirs:
+                print(f"  Dir: {d}")
+            for f in files:
+                print(f"  File: {f}")
+                
     except Exception as e:
-        print(f"Import failed: {str(e)}")
-        # Update status to error
-        try:
-            await db.uploads.update_one(
-                {"_id": ObjectId(upload_id)},
-                {"$set": {
-                    "status": "error",
-                    "error": str(e),
-                    "updated_at": datetime.utcnow()
-                }}
-            )
-        except Exception as e2:
-            print(f"Failed to update error status: {str(e2)}")
+        print(f"Error during extraction: {str(e)}")
         raise
 
 async def main():
@@ -604,7 +674,7 @@ async def main():
         print(f"\nProcessing channel: {channel_dir}")
         
         try:
-            await process_channel(db, channel_path, channel_dir)
+            await process_channel(db, os.path.join(channel_path, f"{channel_dir}.txt"), channel_dir)
         except Exception as e:
             print(f"Error processing channel {channel_dir}: {e}")
             continue
