@@ -24,8 +24,14 @@ async def main():
         count = await db.messages.count_documents({})
         logger.info(f"Found {count} messages to process")
         
-        # Update embeddings
-        await service.update_chroma_embeddings(db)
+        # Clear existing embeddings
+        await service.clear_collection()
+        
+        # Get all messages
+        messages = await db.messages.find({}).to_list(length=None)
+        
+        # Add messages in batches
+        await service.add_messages(messages, batch_size=50)
         logger.info("Embeddings updated successfully")
         
     except Exception as e:

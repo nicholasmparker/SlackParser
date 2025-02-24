@@ -1,4 +1,4 @@
-from slack_parser import SlackMessageParser
+from app.slack_parser import SlackMessageParser
 import json
 
 # Test message

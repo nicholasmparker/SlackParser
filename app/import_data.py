@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 # Constants
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+MONGODB_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 EXPORT_DIR = os.getenv("EXPORT_DIR", "export")
 
 # Initialize embedding service
@@ -187,7 +188,7 @@ async def import_slack_data():
     
     # Wait for MongoDB to be ready
     client = await wait_for_mongodb()
-    db = client.slack_data
+    db = client[MONGO_DB]
     
     # Clear existing collections to avoid duplicate key errors
     print("Clearing existing collections...")
@@ -234,20 +235,20 @@ async def import_new_messages() -> int:
     
     # Wait for MongoDB to be ready
     client = await wait_for_mongodb()
-    db = client.slack_data
+    db = client[MONGO_DB]
     
     # Get the timestamp of the most recent message
     latest_msg = await db.messages.find_one(
-        sort=[("ts", -1)]
+        sort=[("timestamp", -1)]
     )
-    latest_ts = latest_msg["ts"] if latest_msg else 0
+    latest_ts = latest_msg["timestamp"] if latest_msg else datetime.min
+    
+    # Import conversations first
+    conversations = await import_conversations(client)
     
     # Track number of new messages
     new_message_count = 0
     new_messages_for_embedding = []
-    
-    # Import all conversations first
-    conversations = await import_conversations()
     
     # For each conversation, import messages newer than latest_ts
     for conv in conversations:
@@ -264,7 +265,7 @@ async def import_new_messages() -> int:
                 messages = json.load(f)
                 
             # Filter and import only new messages
-            new_messages = [msg for msg in messages if float(msg["ts"]) > latest_ts]
+            new_messages = [msg for msg in messages if float(msg["ts"]) > latest_ts.timestamp()]
             if new_messages:
                 # Add conversation_id to messages
                 for msg in new_messages:
@@ -291,7 +292,7 @@ async def import_new_messages() -> int:
 async def import_conversations():
     """Import all conversations from the Slack data directory."""
     client = await wait_for_mongodb()
-    db = client.slack_data
+    db = client[MONGO_DB]
     
     conversations = []
     
@@ -345,6 +346,7 @@ async def insert_messages(db: Any, messages: List[Dict[str, Any]], batch_size=50
     try:
         for i in range(0, len(messages), batch_size):
             batch = messages[i:i + batch_size]
+            
             try:
                 await db.messages.insert_many(batch)
             except Exception as e:
@@ -688,7 +690,7 @@ async def import_channel_messages(
     import_id: str
 ) -> int:
     """Import messages from a channel export file"""
-    db = client.slack_data
+    db = client[MONGO_DB]
     
     try:
         with open(messages_file, 'r') as f:
@@ -758,7 +760,7 @@ async def import_channel_messages(
 
 async def import_conversations(client: AsyncIOMotorClient) -> Dict[str, str]:
     """Import channel/conversation metadata"""
-    db = client.slack_data
+    db = client[MONGO_DB]
     channel_map = {}
     
     try:
@@ -804,7 +806,7 @@ async def import_conversations(client: AsyncIOMotorClient) -> Dict[str, str]:
 async def main():
     """Main import process"""
     client = AsyncIOMotorClient(MONGODB_URL)
-    db = client.slack_data
+    db = client[MONGO_DB]
     
     try:
         # Create unique indexes

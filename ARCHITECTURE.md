@@ -56,7 +56,7 @@ $FILE_STORAGE (default: file_storage/)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| MONGODB_URL | mongodb://mongodb:27017 | MongoDB connection string |
+| MONGO_URL | mongodb://mongodb:27017 | MongoDB connection URL |
 | MONGO_DB | slack_data | MongoDB database name |
 | CHROMA_HOST | localhost | Chroma server hostname |
 | CHROMA_PORT | 8000 | Chroma server port |
@@ -81,49 +81,33 @@ $FILE_STORAGE (default: file_storage/)
    - DATA_DIR and FILE_STORAGE paths must exist and be writable
    - Required for file operations and data extraction
 
-## Critical Issues
+## Monitoring
 
-### Database Name Inconsistency
-There is currently an inconsistency in the database name across different files:
+To check the database status:
 
-1. Files using `slack_data`:
-   - main.py (via MONGO_DB env var)
-   - import_data.py
+```bash
+# Check collections
+docker-compose exec mongodb mongosh --eval "use slack_data; show collections"
 
-2. Files using `slack_db`:
-   - dependencies.py
-   - migrate.py
-   - test_mongo.py
-   - check_status.py
-   - train_embeddings.py
-   - migrate_embeddings.py
-
-This needs to be unified to prevent data synchronization issues.
+# Check indexes
+docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndexes()"
+```
 
 ## Verification Steps
 
-1. Database Health
-   ```bash
-   # Check MongoDB collections
-   docker-compose exec mongodb mongosh --eval "use slack_data; show collections"
-   
-   # Verify indexes
-   docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndexes()"
-   ```
-
-2. Chroma Health
+1. Chroma Health
    ```bash
    # Check embeddings count matches MongoDB
    python app/test_embeddings.py
    ```
 
-3. File System
+2. File System
    ```bash
    # Check directory permissions
    ls -la data/ file_storage/
    ```
 
-4. Environment
+3. Environment
    ```bash
    # Verify all variables are set
    docker-compose config

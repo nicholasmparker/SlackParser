@@ -1,5 +1,5 @@
 import asyncio
-from embeddings import EmbeddingService
+from .embeddings import EmbeddingService
 
 async def test():
     service = EmbeddingService()

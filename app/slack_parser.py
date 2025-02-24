@@ -21,10 +21,15 @@ class SlackMessageParser:
         return soup.get_text()
     
     @staticmethod
-    def clean_slack_formatting(text: str) -> str:
+    def clean_slack_formatting(text: str, user_map: Dict[str, str] = None) -> str:
         """Remove Slack-specific formatting markers"""
-        # Remove user mentions
-        text = re.sub(r'<@[A-Z0-9]+>', '', text)
+        # Replace user mentions with names if available
+        if user_map:
+            for user_id, user_name in user_map.items():
+                text = text.replace(f"<@{user_id}>", f"@{user_name}")
+        
+        # Remove remaining user mentions
+        text = re.sub(r'<@([A-Z0-9]+)>', r'@\1', text)
         
         # Remove channel mentions
         text = re.sub(r'<#[A-Z0-9]+\|([^>]+)>', r'#\1', text)
@@ -39,7 +44,7 @@ class SlackMessageParser:
         return text.strip()
     
     @staticmethod
-    def extract_blocks_text(blocks: List[Dict[str, Any]]) -> str:
+    def extract_blocks_text(blocks: List[Dict[str, Any]], user_map: Dict[str, str] = None) -> str:
         """Extract text from Slack message blocks"""
         texts = []
         
@@ -48,9 +53,14 @@ class SlackMessageParser:
                 for element in block.get("elements", []):
                     if element.get("type") == "rich_text_section":
                         for text_element in element.get("elements", []):
-                            if text_element.get("type") in ["text", "user"]:
-                                text = text_element.get("text", "")
-                                texts.append(text)
+                            if text_element.get("type") == "text":
+                                texts.append(text_element.get("text", ""))
+                            elif text_element.get("type") == "user":
+                                user_id = text_element.get("user_id", "")
+                                if user_map and user_id in user_map:
+                                    texts.append(f"@{user_map[user_id]}")
+                                else:
+                                    texts.append(f"@{user_id}")
             elif "text" in block:
                 # Handle plain text blocks
                 if isinstance(block["text"], str):
@@ -63,44 +73,51 @@ class SlackMessageParser:
     @staticmethod
     def parse_message(message: Dict[str, Any]) -> Dict[str, Any]:
         """Parse a Slack message and return cleaned data"""
+        # Extract user info
+        user_map = {}
+        if "author_name" in message:
+            user_map[message.get("author_id", "")] = message["author_name"]
+        
         parsed = {
-            "id": message.get("client_msg_id", message.get("ts", "")),
+            "id": message.get("ts", ""),
             "timestamp": message.get("ts", ""),
-            "user": message.get("user", ""),
-            "team": message.get("team", ""),
-            "channel": message.get("channel", ""),
-            "channel_type": message.get("channel_type", ""),
+            "user": message.get("author_id", ""),
+            "user_name": message.get("author_name", ""),
+            "user_title": message.get("author_subname", ""),
+            "team": message.get("channel_team", ""),
+            "channel": message.get("channel_id", ""),
+            "channel_name": message.get("channel_name", ""),
             "thread_ts": message.get("thread_ts"),
             "reply_count": message.get("reply_count", 0),
             "reply_users_count": message.get("reply_users_count", 0),
             "reactions": message.get("reactions", []),
+            "url": message.get("original_url", "")
         }
         
         # Get the message text
         text = ""
         
         # Try to get text from blocks first
-        if "blocks" in message:
-            text = SlackMessageParser.extract_blocks_text(message["blocks"])
+        if "message_blocks" in message:
+            for block in message["message_blocks"]:
+                if "message" in block and "blocks" in block["message"]:
+                    text = SlackMessageParser.extract_blocks_text(
+                        block["message"]["blocks"],
+                        user_map
+                    )
+                    break
         
         # Fallback to raw text if blocks parsing failed
         if not text and "text" in message:
             text = message["text"]
+            text = SlackMessageParser.clean_slack_formatting(text, user_map)
         
         # Clean the text
         if text:
             text = SlackMessageParser.clean_html(text)
-            text = SlackMessageParser.clean_slack_formatting(text)
         
         parsed["text"] = text
         
-        # Add user info if available
-        if "user_profile" in message:
-            profile = message["user_profile"]
-            parsed["user_name"] = profile.get("real_name", "")
-            parsed["user_email"] = profile.get("email", "")
-            parsed["user_title"] = profile.get("title", "")
-            
         # Add thread/parent message context if available
         if message.get("parent_message"):
             parent = message["parent_message"]

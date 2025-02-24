@@ -847,3 +847,59 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         except:
             pass
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/embeddings/train")
+async def train_embeddings(request: Request):
+    """Train embeddings for all messages in the database"""
+    try:
+        # Get just 100 messages from MongoDB for testing
+        messages = await app.db.messages.find().limit(100).to_list(length=None)
+        logger.info(f"Found {len(messages)} messages to embed")
+        
+        # Train embeddings
+        await embedding_service.add_messages(messages)
+        
+        return {"status": "success", "message": f"Trained embeddings for {len(messages)} messages"}
+    except Exception as e:
+        logger.error(f"Error training embeddings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/embeddings/reset")
+async def reset_embeddings(request: Request):
+    """Reset the embeddings collection"""
+    try:
+        await embedding_service.reset_collection()
+        return {"status": "success", "message": "Reset embeddings collection"}
+    except Exception as e:
+        logger.error(f"Error resetting embeddings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/search")
+async def search_messages(
+    query: str = Body(...),
+    limit: int = Body(10),
+    hybrid_alpha: float = Body(0.5),
+    filter_channels: Optional[List[str]] = Body(None),
+    filter_users: Optional[List[str]] = Body(None),
+    filter_has_files: Optional[bool] = Body(None),
+    filter_has_reactions: Optional[bool] = Body(None),
+    filter_in_thread: Optional[bool] = Body(None),
+    filter_date_range: Optional[tuple[datetime, datetime]] = Body(None)
+):
+    """Search for messages using hybrid semantic + keyword search"""
+    try:
+        results = await embedding_service.search(
+            query=query,
+            limit=limit,
+            hybrid_alpha=hybrid_alpha,
+            filter_channels=filter_channels,
+            filter_users=filter_users,
+            filter_has_files=filter_has_files,
+            filter_has_reactions=filter_has_reactions,
+            filter_in_thread=filter_in_thread,
+            filter_date_range=filter_date_range
+        )
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error searching messages: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -7,7 +7,7 @@ services:
       - "8000:8000"
     environment:
       - MONGO_URL=mongodb://mongodb:27017
-      - MONGO_DB=slack_data
+      - MONGO_DB=${MONGO_DB:-slack_data}
       - OLLAMA_URL=http://host.docker.internal:11434
       - DATA_DIR=/data
       - FILE_STORAGE=/files
@@ -31,9 +31,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 6G
+          memory: 8G
         reservations:
-          memory: 2G
+          memory: 4G
     restart: on-failure:3
 
   mongodb:
@@ -46,9 +46,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
         reservations:
-          memory: 512M
+          memory: 1G
 
   chroma:
     image: ghcr.io/chroma-core/chroma:latest
@@ -59,8 +59,9 @@ services:
     environment:
       - ALLOW_RESET=true
       - ANONYMIZED_TELEMETRY=false
+      - IS_PERSISTENT=true
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8000/api/v1/heartbeat"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -74,5 +75,8 @@ services:
 
 volumes:
   mongodb_data:
+    name: mongodb_data
   mongodb_config:
+    name: mongodb_config
   chroma_data:
+    name: chroma_data
