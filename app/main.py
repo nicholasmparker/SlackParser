@@ -16,6 +16,7 @@ from werkzeug.utils import secure_filename
 import asyncio
 import shutil
 import json
+import aiohttp
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +31,7 @@ app = FastAPI()
 FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
 MONGO_DB = os.getenv("MONGO_DB", "slack_data")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:8000")
 
 # Get base directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -1052,3 +1054,48 @@ async def reset_embeddings(request: Request, upload_id: str):
     except Exception as e:
         logger.error(f"Error resetting embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    """Check health of all dependencies"""
+    status = {
+        "status": "healthy",
+        "mongodb": "unknown",
+        "chroma": "unknown",
+        "ollama": "unknown",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    try:
+        # Check MongoDB
+        await app.db.command("ping")
+        status["mongodb"] = "healthy"
+    except Exception as e:
+        status["mongodb"] = f"unhealthy: {str(e)}"
+        status["status"] = "unhealthy"
+    
+    try:
+        # Check Chroma
+        if not app.embeddings:
+            app.embeddings = EmbeddingService()
+            await app.embeddings.initialize()
+        collection = app.embeddings.collection
+        if not collection:
+            raise ValueError("Chroma collection not initialized")
+        status["chroma"] = "healthy"
+    except Exception as e:
+        status["chroma"] = f"unhealthy: {str(e)}"
+        status["status"] = "unhealthy"
+    
+    try:
+        # Check Ollama
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{OLLAMA_URL}/api/tags") as response:
+                if response.status != 200:
+                    raise ValueError(f"Ollama returned status {response.status}")
+                status["ollama"] = "healthy"
+    except Exception as e:
+        status["ollama"] = f"unhealthy: {str(e)}"
+        status["status"] = "unhealthy"
+    
+    return status
