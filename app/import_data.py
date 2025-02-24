@@ -196,17 +196,17 @@ async def import_slack_data():
     await db.conversations.delete_many({})
     await db.files.delete_many({})
     await db.canvases.delete_many({})
+    await db.users.delete_many({})
     
     # Create indexes
     print("Creating indexes...")
-    await db.messages.create_index([("text", "text")])
     await db.messages.create_index([("conversation_id", 1)])
-    await db.messages.create_index([("timestamp", 1)])
-    await db.messages.create_index([("conversation_type", 1)])
-    await db.messages.create_index([("ts", 1)], unique=True)
-    await db.conversations.create_index([("type", 1)])
-    await db.files.create_index([("name", 1)])
-    await db.files.create_index([("path", 1)], unique=True)
+    await db.messages.create_index([("ts", 1)])
+    await db.messages.create_index([("user", 1)])
+    await db.messages.create_index([("text", "text")])
+    await db.conversations.create_index([("name", 1)])
+    await db.users.create_index([("_id", 1)], unique=True)
+    await db.users.create_index([("name", 1)])
     
     # Import conversations first
     print("\nImporting conversations...")
@@ -344,27 +344,41 @@ async def import_conversations():
 async def insert_messages(db: Any, messages: List[Dict[str, Any]], batch_size=50):
     """Insert messages into MongoDB in batches"""
     try:
+        if not messages:
+            return
+            
+        # Process in batches
         for i in range(0, len(messages), batch_size):
             batch = messages[i:i + batch_size]
             
-            try:
-                await db.messages.insert_many(batch)
-            except Exception as e:
-                print(f"Error inserting batch: {str(e)}")
-                # If it's a duplicate key error, try inserting one at a time
-                if "duplicate key error" in str(e):
-                    print("Attempting to insert messages one at a time...")
-                    for msg in batch:
-                        try:
-                            await db.messages.insert_one(msg)
-                        except Exception as e:
-                            if "duplicate key error" not in str(e):
-                                print(f"Error inserting message: {str(e)}")
-                else:
-                    raise
+            # Process users first
+            await process_users(db, batch)
+            
+            # Then insert messages
+            await db.messages.insert_many(batch)
+            
     except Exception as e:
-        print(f"Error in insert_messages: {str(e)}")
+        print(f"Error inserting messages: {str(e)}")
         raise
+
+async def process_users(db: Any, message_batch: List[Dict[str, Any]]):
+    """Process users from a batch of messages and store in users collection"""
+    # Extract unique users from messages
+    users = set()
+    for message in message_batch:
+        if 'user' in message:
+            users.add(message['user'])
+    
+    # Store users in database
+    for user in users:
+        await db.users.update_one(
+            {'_id': user},  # Use username as _id
+            {'$set': {
+                'name': user,
+                'first_seen': datetime.utcnow()
+            }},
+            upsert=True
+        )
 
 async def process_channel(db: Any, channel_path: Path, channel_dir: str):
     """Process a channel directory and import its messages"""

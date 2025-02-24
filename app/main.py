@@ -232,11 +232,35 @@ async def view_conversation(
     if q:  # If searching, also sort by text score
         sort.insert(0, ("score", {"$meta": "textScore"}))
     
-    # Get messages
-    messages = await app.db.messages.find(
-        query,
-        {"score": {"$meta": "textScore"}, "ts": 1, "text": 1, "user": 1, "timestamp": 1, "files": 1, "reactions": 1} if q else None
-    ).sort(sort).skip(skip).limit(page_size).to_list(length=page_size)
+    # Get messages and join with users collection
+    pipeline = [
+        {"$match": query},
+        {"$sort": {"timestamp": -1}},
+        {"$skip": skip},
+        {"$limit": page_size},
+        # Join with users collection
+        {"$lookup": {
+            "from": "users",
+            "localField": "user",
+            "foreignField": "_id",
+            "as": "user_info"
+        }},
+        # Add user name field
+        {"$addFields": {
+            "user_name": {
+                "$ifNull": [
+                    {"$arrayElemAt": ["$user_info.name", 0]},
+                    "$user"  # Fallback to user ID if no user found
+                ]
+            }
+        }},
+        # Remove user_info array
+        {"$project": {
+            "user_info": 0
+        }}
+    ]
+    
+    messages = await app.db.messages.aggregate(pipeline).to_list(length=page_size)
     
     # Get total count for pagination
     total_messages = await app.db.messages.count_documents(query)
@@ -249,7 +273,8 @@ async def view_conversation(
             "conversation": conversation,
             "messages": messages,
             "page": page,
-            "total_pages": total_pages
+            "total_pages": total_pages,
+            "q": q
         }
     )
 

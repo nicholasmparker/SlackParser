@@ -145,6 +145,12 @@
                                             Reset Embeddings
                                         </button>
                                     </div>
+                                {% elif upload.status == "UPLOADED" %}
+                                    <div class="btn-group" role="group">
+                                        <button class="btn btn-sm btn-primary start-import-button" data-upload-id="{{ upload._id }}">
+                                            Start Import
+                                        </button>
+                                    </div>
                                 {% endif %}
                             </td>
                         </tr>
@@ -278,6 +284,33 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     const formData = new FormData();
     formData.append('file', file);
     xhr.send(formData);
+});
+
+// Add event listeners for start import buttons
+document.querySelectorAll('.start-import-button').forEach(button => {
+    button.addEventListener('click', async function() {
+        const uploadId = this.dataset.uploadId;
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting...';
+        
+        try {
+            const response = await fetch(`/admin/import/${uploadId}`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            // Refresh page to show updated status
+            window.location.reload();
+        } catch (error) {
+            console.error('Error starting import:', error);
+            alert('Failed to start import. Please try again.');
+            this.disabled = false;
+            this.textContent = 'Start Import';
+        }
+    });
 });
 
 // Handle import form submission

@@ -32,7 +32,9 @@
             <!-- User and timestamp header -->
             <div class="flex items-baseline gap-2 mb-1">
                 <span class="font-bold text-gray-900">{{ message.user_name }}</span>
-                <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" class="text-xs text-gray-500">{{ message.ts|strftime("%I:%M %p") }}</time>
+                <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" class="text-xs text-gray-500">
+                    {{ message.ts|strftime("%Y-%m-%d %I:%M %p") }}
+                </time>
             </div>
             
             <!-- Message content -->
