@@ -61,7 +61,6 @@ services:
     # No built-in healthcheck for Ollama yet
     # We could add a custom one that checks model availability
 
-
 volumes:
   mongodb_data:
   chroma_data:
