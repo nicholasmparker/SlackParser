@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto px-4">
-    <div class="mb-6">
+<div class="max-w-7xl mx-auto px-4 py-6">
+    <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-900 mb-4">
             {{ conversation.display_name }}
         </h1>
@@ -26,20 +26,24 @@
     </div>
 
     {% if messages %}
-    <div class="space-y-4 mb-6">
+    <div class="space-y-0.5">
         {% for message in messages %}
-        <div id="{{ message.ts }}" class="bg-white rounded-lg shadow-sm p-4">
-            <div class="flex justify-between items-start mb-2">
-                <span class="font-medium text-gray-900">{{ message.user_name }}</span>
-                <span class="text-sm text-gray-500">{{ message.ts|timedelta }}</span>
+        <div id="{{ message.ts }}" class="hover:bg-gray-50 px-6 py-1.5">
+            <!-- User and timestamp header -->
+            <div class="flex items-baseline gap-2 mb-1">
+                <span class="font-bold text-gray-900">{{ message.user_name }}</span>
+                <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" class="text-xs text-gray-500">{{ message.ts|strftime("%I:%M %p") }}</time>
             </div>
-            <div class="text-gray-700 whitespace-pre-wrap">{{ message.text }}</div>
+            
+            <!-- Message content -->
+            <div class="text-gray-900 whitespace-pre-wrap">{{ message.text }}</div>
+            
             {% if message.files %}
-            <div class="mt-3 pt-3 border-t border-gray-200">
+            <div class="mt-2 flex flex-wrap gap-3">
                 {% for file in message.files %}
                 <a href="/files/{{ file.id }}" 
-                   class="inline-flex items-center text-[#611f69] hover:text-[#4a154b] transition-colors mr-4">
-                    <svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   class="inline-flex items-center text-[#1264a3] hover:text-[#0b4c8c] transition-colors">
+                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
                               d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
@@ -51,50 +55,31 @@
         </div>
         {% endfor %}
     </div>
-
+    
     <!-- Pagination -->
     {% if total_pages > 1 %}
-    <nav class="flex justify-center items-center gap-2">
+    <div class="flex justify-center items-center gap-2 mt-6">
         {% if page > 1 %}
-        <a href="?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
-           class="px-3 py-1 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+        <a href="?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}" 
+           class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
             Previous
         </a>
         {% endif %}
         
-        <span class="px-3 py-1 bg-gray-100 border border-gray-300 rounded">
-            Page {{ page }} of {{ total_pages }}
-        </span>
+        <span class="text-gray-600">Page {{ page }} of {{ total_pages }}</span>
         
         {% if page < total_pages %}
         <a href="?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
-           class="px-3 py-1 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+           class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
             Next
         </a>
         {% endif %}
-    </nav>
+    </div>
     {% endif %}
     {% else %}
-    <div class="bg-blue-50 text-blue-700 px-4 py-3 rounded-lg">
-        No messages found{% if q %} matching "{{ q }}"{% endif %} in this conversation.
+    <div class="text-center text-gray-500 py-8">
+        No messages found
     </div>
     {% endif %}
 </div>
-
-<script>
-// Scroll to message if hash is present
-window.addEventListener('load', function() {
-    if (window.location.hash) {
-        const messageId = window.location.hash.substring(1);
-        const element = document.getElementById(messageId);
-        if (element) {
-            element.scrollIntoView();
-            element.classList.add('bg-yellow-50');
-            setTimeout(() => {
-                element.classList.remove('bg-yellow-50');
-            }, 2000);
-        }
-    }
-});
-</script>
 {% endblock %}

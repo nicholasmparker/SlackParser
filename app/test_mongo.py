@@ -7,21 +7,30 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_DB = os.getenv("MONGO_DB", "slack_data")
+
 async def test_mongo():
+    """Test MongoDB connection and query messages"""
     try:
         # Connect to MongoDB
         logger.info("Connecting to MongoDB...")
-        client = AsyncIOMotorClient(os.getenv("MONGODB_URL", "mongodb://localhost:27017"))
-        db = client.slack_db
+        client = AsyncIOMotorClient(MONGO_URL)
+        db = client[MONGO_DB]
+        
+        # Test connection
+        await client.admin.command('ping')
+        logger.info("Successfully connected to MongoDB")
         
         # Count messages
         count = await db.messages.count_documents({})
         logger.info(f"Found {count} messages")
         
-        # Get one message
+        # Get a sample message
         message = await db.messages.find_one({})
         if message:
-            logger.info(f"Sample message: {message}")
+            logger.info("Sample message:")
+            logger.info(message)
         else:
             logger.info("No messages found")
             

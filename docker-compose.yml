@@ -6,7 +6,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGO_URL=mongodb://mongodb:27017
+      - MONGO_DB=slack_data
       - OLLAMA_URL=http://host.docker.internal:11434
       - DATA_DIR=/data
       - FILE_STORAGE=/files
@@ -60,10 +61,10 @@ services:
       - ANONYMIZED_TELEMETRY=false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     deploy:
       resources:
         limits:

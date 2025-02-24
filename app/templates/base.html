@@ -20,6 +20,9 @@
                         <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/">Home</a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.url.path == '/conversations' %}active{% endif %}" href="/conversations">Conversations</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.url.path == '/search' %}active{% endif %}" href="/search">Search</a>
                     </li>
                     <li class="nav-item">

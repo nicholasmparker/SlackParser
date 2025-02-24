@@ -13,6 +13,7 @@ import argparse
 from bson import ObjectId
 import zipfile
 import logging
+from app.slack_parser import parse_slack_message
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ async def parse_message(line):
     Example: [2023-07-06 22:51:43 UTC] <diane> Message text
     """
     try:
+        # Skip empty lines and date headers
+        if not line or line.startswith('----'):
+            return None
+            
         # Extract timestamp
         timestamp_match = re.match(r'\[(.*?) UTC\]', line)
         if not timestamp_match:
@@ -59,21 +64,54 @@ async def parse_message(line):
         timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
         ts = timestamp.timestamp()
         
-        # Extract user and message
+        # Get remaining text after timestamp
         remaining = line[line.index(']')+1:].strip()
-        user_match = re.match(r'<(.+?)> (.*)', remaining)
-        if not user_match:
-            return None
-        user = user_match.group(1)
-        text = user_match.group(2)
         
-        return {
-            'ts': str(ts),
-            'timestamp': timestamp,
-            'user': user,
-            'text': text,
-            'type': 'message'
-        }
+        # Handle file shares
+        file_share_match = re.match(r'(.+?) shared file\(s\) ([A-Z0-9]+)(?: with text:)?\s*(.*)', remaining)
+        if file_share_match:
+            user = file_share_match.group(1)
+            file_id = file_share_match.group(2)
+            text = file_share_match.group(3) or ''
+            return {
+                'ts': str(ts),
+                'timestamp': timestamp,
+                'user': user,
+                'text': text,
+                'type': 'file_share',
+                'file_id': file_id
+            }
+            
+        # Handle channel actions
+        action_match = re.match(r'\((.+?)\) <(.+?)> (.*)', remaining)
+        if action_match:
+            action = action_match.group(1)
+            user = action_match.group(2)
+            data = action_match.group(3)
+            return {
+                'ts': str(ts),
+                'timestamp': timestamp,
+                'user': user,
+                'text': data,
+                'type': action
+            }
+        
+        # Handle standard messages
+        user_match = re.match(r'<(.+?)> (.*)', remaining)
+        if user_match:
+            user = user_match.group(1)
+            text = user_match.group(2)
+            return {
+                'ts': str(ts),
+                'timestamp': timestamp,
+                'user': user,
+                'text': text,
+                'type': 'message'
+            }
+            
+        print(f"Could not parse message line: {line}")
+        return None
+            
     except Exception as e:
         print(f"Error parsing message line: {str(e)}")
         print(f"Line: {line}")
@@ -642,43 +680,211 @@ async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, uploa
         print(f"Error during extraction: {str(e)}")
         raise
 
-async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='/data')
-    parser.add_argument('--start_idx', type=int, default=0, help='Start index for channel range')
-    parser.add_argument('--end_idx', type=int, default=None, help='End index for channel range')
-    args = parser.parse_args()
-
-    mongo_client = AsyncIOMotorClient('mongodb://mongodb:27017')
-    db = mongo_client.slack_data
+async def import_channel_messages(
+    client: AsyncIOMotorClient,
+    channel_id: str,
+    channel_name: str,
+    messages_file: str,
+    import_id: str
+) -> int:
+    """Import messages from a channel export file"""
+    db = client.slack_data
     
-    # Get sorted list of channel directories
-    channel_dirs = sorted([
-        d for d in os.listdir(os.path.join(args.data_dir, 'channels'))
-        if os.path.isdir(os.path.join(args.data_dir, 'channels', d))
-    ])
-
-    # Apply range if specified
-    if args.end_idx is not None:
-        channel_dirs = channel_dirs[args.start_idx:args.end_idx]
-    else:
-        channel_dirs = channel_dirs[args.start_idx:]
-
-    print(f"Importing channels {args.start_idx} to {args.end_idx if args.end_idx else 'end'}")
-    print(f"Channel list: {', '.join(channel_dirs)}")
-
-    # Process each channel directory
-    for channel_dir in channel_dirs:
-        channel_path = os.path.join(args.data_dir, 'channels', channel_dir)
-        print(f"\nProcessing channel: {channel_dir}")
+    try:
+        with open(messages_file, 'r') as f:
+            messages = json.load(f)
+            
+        total = len(messages)
+        imported = 0
         
-        try:
-            await process_channel(db, os.path.join(channel_path, f"{channel_dir}.txt"), channel_dir)
-        except Exception as e:
-            print(f"Error processing channel {channel_dir}: {e}")
-            continue
+        logger.info(f"Importing {total} messages from channel {channel_name}")
+        
+        # Process messages in batches
+        batch_size = 100
+        for i in range(0, len(messages), batch_size):
+            batch = messages[i:i + batch_size]
+            
+            # Parse and clean each message
+            parsed_messages = []
+            for msg in batch:
+                if not isinstance(msg, dict):
+                    logger.warning(f"Skipping invalid message in {channel_name}: {msg}")
+                    continue
+                    
+                try:
+                    # Add channel context
+                    msg["channel"] = channel_id
+                    msg["channel_name"] = channel_name
+                    
+                    # Parse the message
+                    parsed = parse_slack_message(msg)
+                    
+                    # Only import if we have actual text content
+                    if parsed.get("text"):
+                        parsed_messages.append(parsed)
+                    
+                except Exception as e:
+                    logger.error(f"Error parsing message in {channel_name}: {e}")
+                    continue
+            
+            if parsed_messages:
+                try:
+                    # Insert the batch
+                    result = await db.messages.insert_many(parsed_messages)
+                    imported += len(result.inserted_ids)
+                    
+                    # Update import status
+                    await db.import_status.update_one(
+                        {"_id": import_id},
+                        {
+                            "$set": {
+                                "status": "running",
+                                "processed": imported,
+                                "total": total,
+                                "last_updated": datetime.now()
+                            }
+                        }
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error inserting messages batch in {channel_name}: {e}")
+                    continue
+            
+        return imported
+        
+    except Exception as e:
+        logger.error(f"Error importing channel {channel_name}: {e}")
+        return 0
 
-    await update_chroma_embeddings(db)
+async def import_conversations(client: AsyncIOMotorClient) -> Dict[str, str]:
+    """Import channel/conversation metadata"""
+    db = client.slack_data
+    channel_map = {}
+    
+    try:
+        channels_file = os.path.join(DATA_DIR, "channels.json")
+        if os.path.exists(channels_file):
+            with open(channels_file, 'r') as f:
+                channels = json.load(f)
+                
+            for channel in channels:
+                try:
+                    channel_id = channel.get("id")
+                    if not channel_id:
+                        continue
+                        
+                    # Store channel info
+                    await db.conversations.update_one(
+                        {"_id": channel_id},
+                        {"$set": {
+                            "name": channel.get("name", ""),
+                            "created": channel.get("created"),
+                            "creator": channel.get("creator"),
+                            "is_archived": channel.get("is_archived", False),
+                            "is_general": channel.get("is_general", False),
+                            "members": channel.get("members", []),
+                            "topic": channel.get("topic", {}).get("value", ""),
+                            "purpose": channel.get("purpose", {}).get("value", ""),
+                            "type": "channel"
+                        }},
+                        upsert=True
+                    )
+                    
+                    channel_map[channel_id] = channel.get("name", "")
+                    
+                except Exception as e:
+                    logger.error(f"Error importing channel {channel.get('name')}: {e}")
+                    continue
+                    
+    except Exception as e:
+        logger.error(f"Error importing channels: {e}")
+    
+    return channel_map
+
+async def main():
+    """Main import process"""
+    client = AsyncIOMotorClient(MONGODB_URL)
+    db = client.slack_data
+    
+    try:
+        # Create unique indexes
+        await db.messages.create_index([("ts", 1)], unique=True)
+        await db.messages.create_index([("channel", 1)])
+        await db.messages.create_index([("text", "text")])
+        
+        # Import conversations/channels first
+        logger.info("Importing conversations...")
+        channel_map = await import_conversations(client)
+        
+        # Generate a unique import ID
+        import_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create import status
+        await db.import_status.insert_one({
+            "_id": import_id,
+            "status": "starting",
+            "started_at": datetime.now(),
+            "processed": 0,
+            "total": 0
+        })
+        
+        # Import messages from each channel
+        total_imported = 0
+        channels_dir = os.path.join(DATA_DIR, "channels")
+        
+        if os.path.exists(channels_dir):
+            for channel_dir in os.listdir(channels_dir):
+                channel_path = os.path.join(channels_dir, channel_dir)
+                if not os.path.isdir(channel_path):
+                    continue
+                    
+                # Find the messages file
+                messages_file = os.path.join(channel_path, f"{channel_dir}.json")
+                if not os.path.exists(messages_file):
+                    logger.warning(f"No messages file found for channel {channel_dir}")
+                    continue
+                
+                # Import messages
+                imported = await import_channel_messages(
+                    client,
+                    channel_dir,
+                    channel_map.get(channel_dir, channel_dir),
+                    messages_file,
+                    import_id
+                )
+                
+                total_imported += imported
+                logger.info(f"Imported {imported} messages from {channel_dir}")
+        
+        # Update final status
+        await db.import_status.update_one(
+            {"_id": import_id},
+            {
+                "$set": {
+                    "status": "completed",
+                    "completed_at": datetime.now(),
+                    "total_imported": total_imported
+                }
+            }
+        )
+        
+        logger.info(f"Import completed. Total messages imported: {total_imported}")
+        
+    except Exception as e:
+        logger.error(f"Import failed: {e}")
+        # Update error status
+        await db.import_status.update_one(
+            {"_id": import_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error": str(e),
+                    "completed_at": datetime.now()
+                }
+            }
+        )
+    finally:
+        client.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

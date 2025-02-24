@@ -44,38 +44,22 @@ def timedelta_filter(value):
     """Format a timestamp as a human-readable time delta"""
     if not value:
         return ""
-    try:
-        # Handle both ISO format strings and Unix timestamps
-        if isinstance(value, str):
-            try:
-                value = datetime.fromisoformat(value)
-            except ValueError:
-                # Try parsing as Unix timestamp
-                value = datetime.fromtimestamp(float(value))
-        elif isinstance(value, (int, float)):
-            value = datetime.fromtimestamp(float(value))
-            
-        now = datetime.now(value.tzinfo)
-        delta = now - value
-        if delta.days > 365:
-            years = delta.days // 365
-            return f"{years}y ago"
-        elif delta.days > 30:
-            months = delta.days // 30
-            return f"{months}mo ago"
-        elif delta.days > 0:
-            return f"{delta.days}d ago"
-        elif delta.seconds > 3600:
-            hours = delta.seconds // 3600
-            return f"{hours}h ago"
-        elif delta.seconds > 60:
-            minutes = delta.seconds // 60
-            return f"{minutes}m ago"
-        else:
-            return "just now"
-    except Exception as e:
-        logger.error(f"Error formatting timestamp: {e}")
-        return str(value)
+    
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        try:
+            value = float(value)
+            dt = datetime.fromtimestamp(value)
+        except ValueError:
+            return value
+    else:
+        try:
+            dt = datetime.fromtimestamp(value)
+        except (TypeError, ValueError):
+            return str(value)
+    
+    return dt.strftime("%B %d, %Y")
 
 def from_json_filter(value):
     """Parse a JSON string into a Python object"""
@@ -86,8 +70,22 @@ def from_json_filter(value):
     except:
         return None
 
+def strftime_filter(value, format):
+    if not value:
+        return ""
+    
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            return value
+    
+    dt = datetime.fromtimestamp(value)
+    return dt.strftime(format)
+
 templates.env.filters["timedelta"] = timedelta_filter
 templates.env.filters["from_json"] = from_json_filter
+templates.env.filters["strftime"] = strftime_filter
 
 # Initialize embedding service
 async def init_embedding_service():
@@ -174,14 +172,14 @@ async def view_conversation(
         {"$match": {"_id": conversation_id}},
         {"$project": {
             "_id": 1,
+            "name": {"$ifNull": ["$name", "$_id"]},  # Use _id as fallback if name is null
             "type": 1,
-            "name": 1,
             "display_name": {
                 "$cond": {
                     "if": {"$eq": ["$type", "dm"]},
                     "then": {
                         "$reduce": {
-                            "input": {"$split": ["$name", "-"]},
+                            "input": {"$split": [{"$ifNull": ["$name", "$_id"]}, "-"]},
                             "initialValue": "",
                             "in": {
                                 "$cond": {
@@ -192,7 +190,7 @@ async def view_conversation(
                             }
                         }
                     },
-                    "else": {"$concat": ["#", "$name"]}
+                    "else": {"$concat": ["#", {"$ifNull": ["$name", "$_id"]}]}
                 }
             }
         }}
@@ -269,14 +267,14 @@ async def conversations(
         {"$match": query},
         {"$project": {
             "_id": 1,
-            "name": 1,
+            "name": {"$ifNull": ["$name", "$_id"]},  # Use _id as fallback if name is null
             "type": 1,
             "display_name": {
                 "$cond": {
                     "if": {"$eq": ["$type", "dm"]},
                     "then": {
                         "$reduce": {
-                            "input": {"$split": ["$name", "-"]},
+                            "input": {"$split": [{"$ifNull": ["$name", "$_id"]}, "-"]},
                             "initialValue": "",
                             "in": {
                                 "$cond": {
@@ -287,7 +285,7 @@ async def conversations(
                             }
                         }
                     },
-                    "else": {"$concat": ["#", "$name"]}
+                    "else": {"$concat": ["#", {"$ifNull": ["$name", "$_id"]}]}
                 }
             }
         }},
@@ -452,7 +450,25 @@ async def admin_page(request: Request):
     # Get recent uploads
     uploads = []
     async for upload in app.db.uploads.find().sort("created_at", -1):
+        # Convert ObjectId to string
         upload["_id"] = str(upload["_id"])
+        
+        # Ensure required fields exist
+        if "size" not in upload:
+            upload["size"] = 0
+        if "status" not in upload:
+            upload["status"] = "unknown"
+        if "filename" not in upload:
+            upload["filename"] = "unknown"
+        if "created_at" not in upload:
+            upload["created_at"] = datetime.now()
+        if "progress" not in upload:
+            upload["progress"] = None
+        if "progress_percent" not in upload:
+            upload["progress_percent"] = 0
+        if "error" not in upload:
+            upload["error"] = None
+            
         # Debug logging
         print(f"Upload: {upload}")
         uploads.append(upload)
@@ -590,13 +606,15 @@ async def cancel_import(request: Request, upload_id: str):
         # Update status to cancelled
         await db.uploads.update_one(
             {"_id": upload_id},
-            {"$set": {
-                "status": "cancelled",
-                "error": None,
-                "progress": "Import cancelled by user",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "error": None,
+                    "progress": "Import cancelled by user",
+                    "progress_percent": 0,
+                    "updated_at": datetime.utcnow()
+                }
+            }
         )
         
         return {"status": "cancelled"}
@@ -689,6 +707,7 @@ async def clear_data(request: Request):
         clear_messages = form.get("clear_messages") == "on"
         clear_embeddings = form.get("clear_embeddings") == "on"
         clear_uploads = form.get("clear_uploads") == "on"
+        clear_conversations = form.get("clear_conversations") == "on"
         
         if clear_messages:
             await app.db.messages.drop()
@@ -714,6 +733,10 @@ async def clear_data(request: Request):
                     if f.is_dir():
                         shutil.rmtree(f)
             print("Cleared uploads")
+
+        if clear_conversations:
+            await app.db.conversations.drop()
+            print("Cleared conversations")
             
         return RedirectResponse(
             url="/admin",

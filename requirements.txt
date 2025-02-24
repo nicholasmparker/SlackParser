@@ -11,3 +11,4 @@ pydantic==2.4.2
 tenacity
 tqdm
 werkzeug
+beautifulsoup4==4.12.3

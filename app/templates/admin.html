@@ -80,13 +80,7 @@
                         <tr data-upload-id="{{ upload._id }}">
                             <td>{{ upload.filename }}</td>
                             <td>
-                                {% if upload.status == 'complete' %}
-                                <span class="badge bg-success">Complete</span>
-                                {% elif upload.status == 'error' %}
-                                <span class="badge bg-danger" title="{{ upload.error }}">Error</span>
-                                {% elif upload.status == 'UPLOADING' %}
-                                <span class="badge bg-primary">Uploading</span>
-                                {% elif upload.status in ['IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
+                                {% if upload.status in ['IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
                                 <div>
                                     <span class="badge bg-info mb-1">{{ upload.status | title }}</span>
                                     {% if upload.progress %}
@@ -102,29 +96,45 @@
                                     <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">{{ upload.progress }}</small>
                                     {% endif %}
                                 </div>
+                                {% elif upload.status == 'complete' %}
+                                <div>
+                                    <span class="badge bg-success">Complete</span>
+                                    {% if upload.progress and 'Imported 0 channels' in upload.progress %}
+                                    <span class="text-muted ms-2">No messages imported</span>
+                                    {% endif %}
+                                </div>
+                                {% elif upload.status == 'error' %}
+                                <div>
+                                    <span class="badge bg-danger" title="{{ upload.error }}">Error</span>
+                                </div>
+                                {% elif upload.status == 'UPLOADING' %}
+                                <span class="badge bg-primary">Uploading</span>
+                                {% elif upload.status == 'UPLOADED' %}
+                                <div>
+                                    <span class="badge bg-secondary">Uploaded</span>
+                                </div>
                                 {% elif upload.status == 'cancelled' %}
-                                <span class="badge bg-warning">Cancelled</span>
+                                <div>
+                                    <span class="badge bg-warning">Cancelled</span>
+                                </div>
                                 {% else %}
                                 <span class="badge bg-secondary">{{ upload.status }}</span>
                                 {% endif %}
                             </td>
-                            <td>
-                                {% if upload.size %}
-                                {{ "{:,.0f}".format(upload.size / 1024 / 1024) }} MB
-                                {% else %}
-                                -
-                                {% endif %}
-                            </td>
+                            <td>{{ "{:,.0f}".format(upload.size / 1024 / 1024) }} MB</td>
                             <td>{{ upload.created_at | timedelta }}</td>
                             <td class="text-end">
-                                {% if upload.status in ['UPLOADING', 'IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
-                                <form action="/admin/cancel_import/{{ upload._id }}" method="post" style="display: inline;">
+                                {% if upload.status in ['IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
+                                <form action="/admin/import/{{ upload._id }}/cancel" method="post" style="display: inline;">
                                     <button type="submit" class="btn btn-sm btn-warning">Cancel</button>
                                 </form>
-                                {% elif upload.status in ['UPLOADED', 'cancelled', 'error'] %}
+                                {% elif upload.status in ['UPLOADED', 'cancelled', 'error'] or (upload.status == 'complete' and upload.progress and 'Imported 0 channels' in upload.progress) %}
                                 <form class="import-form" style="display: inline;">
                                     <input type="hidden" name="upload_id" value="{{ upload._id }}">
-                                    <button type="submit" class="btn btn-sm btn-primary">Start Import</button>
+                                    <button type="submit" class="btn btn-sm btn-primary">
+                                        {% if upload.status == 'UPLOADED' %}Start Import
+                                        {% else %}Retry Import{% endif %}
+                                    </button>
                                 </form>
                                 {% endif %}
                             </td>
@@ -150,28 +160,23 @@
             <p class="text-muted mb-4">Select which data you want to clear. This action cannot be undone.</p>
             
             <form action="/admin/clear" method="post">
-                <div class="list-group mb-4">
-                    <label class="list-group-item d-flex gap-3 py-3">
-                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_messages" name="clear_messages">
-                        <div>
-                            <strong class="d-block mb-1">Clear Messages</strong>
-                            <span class="d-block text-muted">Delete all imported messages and conversations</span>
-                        </div>
-                    </label>
-                    <label class="list-group-item d-flex gap-3 py-3">
-                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_embeddings" name="clear_embeddings">
-                        <div>
-                            <strong class="d-block mb-1">Clear Embeddings</strong>
-                            <span class="d-block text-muted">Delete all AI search embeddings</span>
-                        </div>
-                    </label>
-                    <label class="list-group-item d-flex gap-3 py-3">
-                        <input type="checkbox" class="form-check-input flex-shrink-0" id="clear_uploads" name="clear_uploads">
-                        <div>
-                            <strong class="d-block mb-1">Clear Uploads</strong>
-                            <span class="d-block text-muted">Delete all uploaded files</span>
-                        </div>
-                    </label>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="clear_messages" name="clear_messages">
+                        <label class="form-check-label" for="clear_messages">Clear Messages</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="clear_embeddings" name="clear_embeddings">
+                        <label class="form-check-label" for="clear_embeddings">Clear Embeddings</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="clear_uploads" name="clear_uploads">
+                        <label class="form-check-label" for="clear_uploads">Clear Uploads</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="clear_conversations" name="clear_conversations">
+                        <label class="form-check-label" for="clear_conversations">Clear Conversations</label>
+                    </div>
                 </div>
                 <button type="submit" class="btn btn-danger" id="clearButton" disabled>Clear Selected Data</button>
             </form>
@@ -278,15 +283,19 @@ document.querySelectorAll('.import-form').forEach(form => {
             button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting...';
             
             const response = await fetch(`/admin/import/${uploadId}`, {
-                method: 'POST'
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
             });
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                throw new Error(data.detail || `HTTP error! status: ${response.status}`);
             }
             
-            // Refresh the page to show updated status
-            window.location.reload();
+            // Start polling for status updates
+            pollImportStatus();
             
         } catch (error) {
             console.error('Error:', error);
@@ -300,19 +309,52 @@ document.querySelectorAll('.import-form').forEach(form => {
 // Poll for import status updates
 function pollImportStatus() {
     const importingRows = document.querySelectorAll('tr[data-upload-id]');
-    if (importingRows.length === 0) return;
     
     importingRows.forEach(row => {
         const uploadId = row.dataset.uploadId;
-        fetch(`/admin/import/${uploadId}/status`)
-            .then(response => response.json())
-            .then(data => {
-                if (data.status !== row.dataset.status) {
-                    // Status changed, reload the page
+        const statusCell = row.querySelector('td:nth-child(2)'); // Status is in second column
+        
+        // Check status every 2 seconds
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(`/admin/import/${uploadId}/status`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update the status cell with the new status
+                if (data.status === 'extracting' || data.status === 'importing_channels' || data.status === 'generating_embeddings') {
+                    statusCell.innerHTML = `
+                        <div>
+                            <span class="badge bg-info mb-1">${data.status.charAt(0).toUpperCase() + data.status.slice(1)}</span>
+                            ${data.progress ? `
+                            <div class="progress" style="height: 4px;">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                     role="progressbar" 
+                                     style="width: ${data.progress_percent}%"
+                                     aria-valuenow="${data.progress_percent}"
+                                     aria-valuemin="0"
+                                     aria-valuemax="100"></div>
+                            </div>
+                            <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">${data.progress}</small>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+                
+                // If import is complete or errored, stop polling and refresh
+                if (data.status === 'complete' || data.status === 'error') {
+                    clearInterval(interval);
                     window.location.reload();
                 }
-            })
-            .catch(console.error);
+                
+            } catch (error) {
+                console.error('Error polling status:', error);
+                clearInterval(interval);
+            }
+        }, 2000);
     });
 }
 

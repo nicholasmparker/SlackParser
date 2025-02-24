@@ -1,177 +1,249 @@
 import asyncio
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-from app.embeddings import EmbeddingService
-import logging
-from tqdm import tqdm
 import argparse
+import logging
 from datetime import datetime, timedelta
+from motor.motor_asyncio import AsyncIOMotorClient
+from tqdm.asyncio import tqdm
+import os
+from typing import List, Dict, Any
+
+from app.embeddings import EmbeddingService
+from app.config import MONGO_URL, MONGO_DB
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# MongoDB connection
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-
-async def get_messages_by_engagement(client, min_reactions=1, min_replies=1, limit=None):
-    """Get messages with high engagement (reactions or replies)"""
-    db = client.slack_db
-    
-    # Query for messages with reactions or replies
-    query = {
-        "text": {"$exists": True, "$ne": ""},
-        "user": {"$not": {"$regex": ".*_bot$"}},  # Exclude bot messages
-        "$or": [
-            {"reactions": {"$exists": True, "$ne": []}},
-            {"reply_count": {"$gte": min_replies}}
-        ]
+async def get_embedding_progress(client):
+    """Get current embedding progress"""
+    db = client[MONGO_DB]
+    progress = await db.embedding_progress.find_one({"_id": "current"}) or {
+        "_id": "current",
+        "processed": 0,
+        "total": 0,
+        "status": "not_started",
+        "last_message_id": None,
+        "errors": [],
+        "retries": 0
     }
-    
-    # Get messages sorted by engagement (reaction count + reply count)
-    pipeline = [
-        {"$match": query},
-        {"$addFields": {
-            "engagement_score": {
-                "$add": [
-                    {"$size": {"$ifNull": ["$reactions", []]}},
-                    {"$ifNull": ["$reply_count", 0]}
-                ]
-            }
-        }},
-        {"$sort": {"engagement_score": -1}},
-    ]
-    
-    if limit:
-        pipeline.append({"$limit": limit})
-        
-    cursor = db.messages.aggregate(pipeline)
-    return await cursor.to_list(length=None)
+    return progress
 
-async def get_recent_messages(client, days=30, limit=None):
-    """Get recent messages within the specified time window"""
-    db = client.slack_db
-    
-    # Calculate cutoff date
-    cutoff = datetime.now() - timedelta(days=days)
-    
-    # Query for recent messages
-    query = {
-        "text": {"$exists": True, "$ne": ""},
-        "user": {"$not": {"$regex": ".*_bot$"}},  # Exclude bot messages
-        "timestamp": {"$gte": cutoff}
+async def update_embedding_progress(client, processed, total, status="running", error=None, last_message_id=None):
+    """Update embedding progress"""
+    db = client[MONGO_DB]
+    update = {
+        "processed": processed,
+        "total": total,
+        "status": status,
+        "last_updated": datetime.now()
     }
+    if error:
+        update["$push"] = {"errors": {
+            "timestamp": datetime.now(),
+            "error": str(error),
+            "processed": processed
+        }}
+    if last_message_id:
+        update["last_message_id"] = last_message_id
     
-    cursor = db.messages.find(query).sort("timestamp", -1)
-    if limit:
-        cursor = cursor.limit(limit)
-        
-    return await cursor.to_list(length=None)
+    try:
+        result = await db.embedding_progress.update_one(
+            {"_id": "current"},
+            {"$set": update},
+            upsert=True
+        )
+        logger.debug(f"Progress update result: {result.modified_count} documents modified")
+    except Exception as e:
+        logger.error(f"Failed to update progress: {e}")
 
-async def enrich_messages(client, messages):
+async def get_messages_batch(client, skip: int, limit: int) -> List[Dict[Any, Any]]:
+    """Get a batch of messages with error handling and retries"""
+    db = client[MONGO_DB]
+    retries = 3
+    backoff = 1
+    
+    for attempt in range(retries):
+        try:
+            cursor = db.messages.find({
+                "text": {"$exists": True, "$ne": ""},
+                "user": {"$not": {"$regex": ".*_bot$"}}
+            }).sort("timestamp", -1).skip(skip).limit(limit)
+            
+            return await cursor.to_list(length=None)
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            logger.warning(f"Failed to fetch messages (attempt {attempt + 1}/{retries}): {e}")
+            await asyncio.sleep(backoff)
+            backoff *= 2
+
+async def enrich_messages(client, messages: List[Dict[Any, Any]]) -> List[Dict[Any, Any]]:
     """Enrich messages with additional context"""
-    # Get thread contexts
-    thread_ts_values = {msg.get("thread_ts") for msg in messages if msg.get("thread_ts")}
-    thread_messages = {}
-    
-    if thread_ts_values:
-        # Fetch all parent messages in one query
-        parent_messages = await client.slack_db.messages.find({
-            "ts": {"$in": list(thread_ts_values)}
-        }).to_list(length=None)
+    if not messages:
+        return []
         
-        # Create lookup dictionary
-        thread_messages = {msg["ts"]: msg for msg in parent_messages}
+    db = client[MONGO_DB]
+    enriched = []
     
-    # Get channel names
-    channel_ids = {msg["conversation_id"] for msg in messages if msg.get("conversation_id")}
-    channels = await client.slack_db.conversations.find(
-        {"_id": {"$in": list(channel_ids)}},
-        {"_id": 1, "name": 1}
-    ).to_list(length=None)
-    channel_names = {str(c["_id"]): c.get("name") for c in channels}
+    # Get all unique conversation IDs
+    conv_ids = list(set(m.get("conversation") for m in messages if m.get("conversation")))
     
-    # Enrich messages
+    # Fetch all conversations in one query
+    conversations = {}
+    if conv_ids:
+        cursor = db.conversations.find({"_id": {"$in": conv_ids}})
+        async for conv in cursor:
+            conversations[conv["_id"]] = conv
+    
     for msg in messages:
-        # Add thread context
-        if msg.get("thread_ts"):
-            msg["parent_message"] = thread_messages.get(msg["thread_ts"])
+        enriched_msg = msg.copy()
         
-        # Add channel name
-        conv_id = msg.get("conversation_id")
-        if conv_id:
-            msg["channel_name"] = channel_names.get(str(conv_id))
+        # Add conversation context
+        conv_id = msg.get("conversation")
+        if conv_id and conv_id in conversations:
+            conv = conversations[conv_id]
+            enriched_msg["conversation_name"] = conv.get("name", "")
+            enriched_msg["conversation_type"] = conv.get("type", "")
+        
+        # Clean and normalize text
+        if enriched_msg.get("text"):
+            enriched_msg["text"] = enriched_msg["text"].strip()
+        
+        enriched.append(enriched_msg)
     
-    return messages
+    return enriched
+
+async def process_message_batch(
+    client,
+    embedding_service: EmbeddingService,
+    messages: List[Dict[Any, Any]],
+    batch_size: int
+) -> int:
+    """Process a batch of messages, returning number of successful embeddings"""
+    if not messages:
+        return 0
+    
+    try:
+        # Enrich messages
+        enriched_messages = await enrich_messages(client, messages)
+        
+        # Generate embeddings in smaller batches
+        successful = 0
+        for i in range(0, len(enriched_messages), batch_size):
+            batch = enriched_messages[i:i + batch_size]
+            try:
+                await embedding_service.add_messages(batch, batch_size=batch_size)
+                successful += len(batch)
+            except Exception as e:
+                logger.error(f"Failed to process messages {i} to {i + len(batch)}: {e}")
+                # Continue with next batch instead of failing completely
+                continue
+        
+        return successful
+    except Exception as e:
+        logger.error(f"Failed to process batch: {e}")
+        return 0
 
 async def main():
     parser = argparse.ArgumentParser(description='Train embeddings on Slack messages')
-    parser.add_argument('--limit', type=int, default=None, help='Number of messages to process')
-    parser.add_argument('--batch-size', type=int, default=50, help='Batch size for processing')
-    parser.add_argument('--days', type=int, default=30, help='Days of recent messages to include')
-    parser.add_argument('--min-reactions', type=int, default=1, help='Minimum reactions for engagement-based selection')
-    parser.add_argument('--min-replies', type=int, default=1, help='Minimum replies for engagement-based selection')
-    parser.add_argument('--engagement-ratio', type=float, default=0.5, help='Ratio of messages to select by engagement vs recency')
+    parser.add_argument('--batch-size', type=int, default=50, help='Batch size for processing embeddings')
+    parser.add_argument('--fetch-batch-size', type=int, default=1000, help='Batch size for fetching messages')
+    parser.add_argument('--max-retries', type=int, default=3, help='Maximum number of retries for failed batches')
     args = parser.parse_args()
     
-    # Initialize MongoDB client
-    client = AsyncIOMotorClient(MONGODB_URL)
-    
-    # Initialize embedding service
+    # Initialize clients
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[MONGO_DB]
     embedding_service = EmbeddingService()
     
     try:
-        # Get messages by engagement
-        logger.info("Fetching high-engagement messages...")
-        if args.limit:
-            engagement_limit = int(args.limit * args.engagement_ratio)
-        else:
-            engagement_limit = None
+        # Get or create progress
+        progress = await get_embedding_progress(client)
+        if progress["status"] == "completed":
+            logger.info("Embeddings are already up to date")
+            return
+        
+        # Start from where we left off
+        processed = progress["processed"]
+        retries = progress.get("retries", 0)
+        logger.info(f"Resuming from {processed} processed messages (retries: {retries})")
+        
+        # Get total count
+        total = await db.messages.count_documents({
+            "text": {"$exists": True, "$ne": ""},
+            "user": {"$not": {"$regex": ".*_bot$"}}
+        })
+        logger.info(f"Found {total} total messages to process")
+        
+        # Process messages in batches with progress bar
+        pbar = tqdm(total=total, initial=processed, desc="Processing messages")
+        
+        while processed < total:
+            try:
+                # Fetch next batch of messages
+                messages = await get_messages_batch(
+                    client,
+                    skip=processed,
+                    limit=args.fetch_batch_size
+                )
+                
+                if not messages:
+                    break
+                
+                # Process messages
+                successful = await process_message_batch(
+                    client,
+                    embedding_service,
+                    messages,
+                    args.batch_size
+                )
+                
+                # Update progress
+                if successful > 0:
+                    processed += successful
+                    last_id = str(messages[-1]["_id"]) if messages else None
+                    await update_embedding_progress(
+                        client,
+                        processed,
+                        total,
+                        last_message_id=last_id
+                    )
+                    pbar.update(successful)
+                else:
+                    # If batch failed completely, increment retry counter
+                    retries += 1
+                    if retries >= args.max_retries:
+                        raise Exception(f"Failed to process batch after {retries} retries")
+                    logger.warning(f"Retrying batch (attempt {retries}/{args.max_retries})")
+                    await asyncio.sleep(min(retries * 2, 30))  # Exponential backoff
             
-        engagement_messages = await get_messages_by_engagement(
-            client, 
-            min_reactions=args.min_reactions,
-            min_replies=args.min_replies,
-            limit=engagement_limit
-        )
-        logger.info(f"Got {len(engagement_messages)} high-engagement messages")
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                await update_embedding_progress(
+                    client,
+                    processed,
+                    total,
+                    status="error",
+                    error=str(e)
+                )
+                raise
         
-        # Get recent messages
-        logger.info("Fetching recent messages...")
-        if args.limit:
-            recent_limit = args.limit - len(engagement_messages)
-        else:
-            recent_limit = None
-            
-        recent_messages = await get_recent_messages(
-            client,
-            days=args.days,
-            limit=recent_limit
-        )
-        logger.info(f"Got {len(recent_messages)} recent messages")
-        
-        # Combine and deduplicate messages
-        all_messages = list({str(m["_id"]): m for m in engagement_messages + recent_messages}.values())
-        logger.info(f"Got {len(all_messages)} total unique messages")
-        
-        # Enrich messages with context
-        logger.info("Enriching messages with context...")
-        enriched_messages = await enrich_messages(client, all_messages)
-        
-        # Clear existing embeddings
-        logger.info("Clearing existing embeddings...")
-        await embedding_service.delete_all()
-        
-        # Add messages to ChromaDB in batches with progress bar
-        logger.info("Generating embeddings and adding to ChromaDB...")
-        await embedding_service.add_messages(enriched_messages, batch_size=args.batch_size)
-        
-        logger.info("Successfully trained embeddings")
+        # Mark as completed
+        await update_embedding_progress(client, processed, total, status="completed")
+        logger.info("Successfully trained all embeddings")
         
     except Exception as e:
-        logger.error(f"Error training embeddings: {str(e)}", exc_info=True)
+        logger.error(f"Error training embeddings: {e}", exc_info=True)
+        await update_embedding_progress(
+            client,
+            processed,
+            total,
+            status="failed",
+            error=str(e)
+        )
         raise
     finally:
+        pbar.close()
         client.close()
 
 if __name__ == "__main__":

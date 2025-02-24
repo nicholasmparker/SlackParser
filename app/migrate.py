@@ -1,15 +1,18 @@
+from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
 from embeddings import EmbeddingService
 import logging
+
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def migrate():
-    client = AsyncIOMotorClient(os.getenv('MONGODB_URL'))
-    db = client.slack_db
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[MONGO_DB]
     service = EmbeddingService()
     
     messages = await db.messages.find().limit(5).to_list(5)

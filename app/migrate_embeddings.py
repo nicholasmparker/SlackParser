@@ -1,11 +1,16 @@
+import os
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
+from app.embeddings import EmbeddingService
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Get environment variables
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 
 async def migrate_embeddings():
     """Generate embeddings for all existing messages in MongoDB"""
@@ -14,17 +19,13 @@ async def migrate_embeddings():
         
         # Connect to MongoDB
         logger.debug("Connecting to MongoDB...")
-        client = AsyncIOMotorClient(os.getenv("MONGODB_URL", "mongodb://localhost:27017"))
-        db = client.slack_db
+        client = AsyncIOMotorClient(MONGO_URL)
+        db = client[MONGO_DB]
         
         # Get total message count
         logger.debug("Counting messages...")
         total_messages = await db.messages.count_documents({})
         logger.info(f"Found {total_messages} messages to process")
-        
-        # Import embeddings module
-        logger.debug("Importing EmbeddingService...")
-        from app.embeddings import EmbeddingService
         
         # Initialize embedding service
         logger.debug("Initializing EmbeddingService...")
