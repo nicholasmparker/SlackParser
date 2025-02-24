@@ -10,7 +10,7 @@ import tenacity
 import re
 from datetime import datetime
 from urllib.parse import urlparse
-from app.config import CHROMA_PORT
+from app.config import CHROMA_PORT, CHROMA_HOST
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -19,37 +19,35 @@ logger = logging.getLogger(__name__)
 class EmbeddingService:
     def __init__(self):
         """Initialize the embedding service"""
-        chroma_host = os.getenv("CHROMA_HOST", "localhost")
-        chroma_port = int(os.getenv("CHROMA_PORT", CHROMA_PORT))
+        self.chroma_client = None
+        self.collection = None
+        self.collection_name = "messages"
+        self.metadata = {
+            "dimension": 768,
+            "hnsw:space": "cosine"
+        }
         
-        # Connect to Chroma
-        self.client = chromadb.HttpClient(
-            host=chroma_host,
-            port=chroma_port,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
-        )
-        
-        # Get or create collection with stable settings
+    async def initialize(self):
+        """Initialize the Chroma client and collection"""
         try:
-            collections = self.client.list_collections()
-            if "messages" in collections:
-                self.collection = self.client.get_collection(name="messages")
-                logger.info("Connected to existing messages collection")
-                logger.info(f"Collection metadata: {self.collection.metadata}")
-            else:
-                logger.info("Creating new messages collection")
-                self.collection = self.client.create_collection(
-                    name="messages",
-                    metadata={"hnsw:space": "cosine", "dimension": 768}
-                )
+            # Connect to Chroma
+            self.chroma_client = chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=CHROMA_PORT,
+                settings=Settings(allow_reset=True)
+            )
+            
+            # Get or create collection
+            self.collection = self.chroma_client.get_or_create_collection(
+                name=self.collection_name,
+                metadata=self.metadata
+            )
+            logger.info(f"Connected to existing {self.collection_name} collection")
+            logger.info(f"Collection metadata: {self.collection.metadata}")
+            
         except Exception as e:
-            logger.error(f"Error connecting to collection: {str(e)}")
+            logger.error(f"Error initializing Chroma client: {str(e)}")
             raise
-        
-        logger.info(f"Connected to Chroma at {chroma_host}:{chroma_port}")
         
         # Initialize Ollama client
         self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
@@ -180,56 +178,80 @@ class EmbeddingService:
             logger.error(f"Error generating embedding: {str(e)}", exc_info=True)
             return np.zeros(768, dtype=np.float32)  # Return zeros with correct dimension
 
-    async def add_messages(self, messages: List[Dict[str, Any]], batch_size: int = 50):
-        """Add messages to ChromaDB with their embeddings in batches"""
-        if not messages:
-            return
+    async def add_messages(self, messages: List[Dict], batch_size=50):
+        """Add messages to ChromaDB"""
+        try:
+            total_messages = len(messages)
+            logger.info(f"Processing {total_messages} messages in batches of {batch_size}")
             
-        total_messages = len(messages)
-        logger.info(f"Processing {total_messages} messages in batches of {batch_size}")
-        
-        # Process messages in chunks to avoid memory issues
-        chunk_size = 1000  # Process 1000 messages at a time
-        for chunk_start in range(0, total_messages, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, total_messages)
-            chunk = messages[chunk_start:chunk_end]
-            logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {total_messages} messages")
-            
-            for i in range(0, len(chunk), batch_size):
-                batch = chunk[i:i + batch_size]
+            # Process messages in batches
+            for i in range(0, total_messages, batch_size):
+                batch = messages[i:i + batch_size]
                 try:
-                    # Prepare texts with context
-                    texts = await asyncio.gather(*[
-                        self._prepare_message_text(msg) 
-                        for msg in batch
-                    ])
+                    # Prepare message texts
+                    texts = []
+                    ids = []
+                    metadatas = []
                     
+                    for message in batch:
+                        if not isinstance(message, dict) or "text" not in message:
+                            logger.warning(f"Skipping invalid message: {message}")
+                            continue
+                            
+                        text = message.get("text", "").strip()
+                        if not text:
+                            logger.warning("Skipping empty message text")
+                            continue
+                        
+                        # Add thread context if available
+                        thread_context = self._get_thread_context(message)
+                        if thread_context:
+                            text = f"{text}\n\nThread Context:\n{thread_context}"
+                        
+                        # Clean and prepare text
+                        text = self._clean_text(text)
+                        if not text:
+                            logger.warning("Skipping message after cleaning")
+                            continue
+                            
+                        texts.append(text)
+                        ids.append(str(message["_id"]))
+                        metadatas.append({
+                            "conversation_id": str(message["conversation_id"]),
+                            "timestamp": message.get("ts", ""),
+                            "thread_ts": message.get("thread_ts", ""),
+                            "user": message.get("user", ""),
+                        })
+                    
+                    if not texts:
+                        logger.warning("No valid texts in batch, skipping")
+                        continue
+                        
                     # Generate embeddings in parallel
                     embeddings = await asyncio.gather(*[
-                        self.generate_embedding(text) 
-                        for text in texts
+                        self.generate_embedding(text) for text in texts
                     ])
                     
-                    # Prepare data for ChromaDB
-                    ids = [str(msg["_id"]) for msg in batch]
-                    metadatas = [{
-                        "channel": msg.get("channel", ""),
-                        "user": msg.get("user", ""),
-                        "thread_ts": msg.get("thread_ts", ""),
-                        "timestamp": float(msg.get("ts", 0)) if msg.get("ts") else 0,  # Convert to float
-                        "text": msg.get("text", ""),
-                    } for msg in batch]
-                    
                     # Add to ChromaDB
-                    await self.add_embeddings(embeddings, ids, metadatas, texts)
+                    self.collection.add(
+                        embeddings=embeddings,
+                        documents=texts,
+                        ids=ids,
+                        metadatas=metadatas
+                    )
                     
-                    # Log progress
-                    progress = min((chunk_start + i + batch_size) / total_messages * 100, 100)
-                    logger.info(f"Progress: {progress:.1f}% ({chunk_start + i + len(batch)}/{total_messages} messages)")
+                    logger.info(f"Added batch of {len(texts)} messages ({i + len(batch)}/{total_messages})")
                     
                 except Exception as e:
-                    logger.error(f"Error processing batch: {str(e)}", exc_info=True)
-    
+                    logger.error(f"Error processing batch: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error adding messages: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
     async def add_embeddings(self, embeddings, ids, metadatas=None, documents=None):
         """Add embeddings to Chroma"""
         if not embeddings:
@@ -359,11 +381,11 @@ class EmbeddingService:
         """Delete all embeddings from the collection"""
         logger.info("Clearing existing embeddings...")
         try:
-            self.client.reset()
+            self.chroma_client.reset()
             logger.info("Reset Chroma database")
             
             # Create new collection with correct dimensions
-            self.collection = self.client.create_collection(
+            self.collection = self.chroma_client.create_collection(
                 name="messages",
                 metadata={"hnsw:space": "cosine", "dimension": 768}
             )
@@ -385,10 +407,10 @@ class EmbeddingService:
         """Clear all embeddings from the collection"""
         try:
             # Delete the collection
-            self.client.delete_collection(name="messages")
+            self.chroma_client.delete_collection(name="messages")
             
             # Recreate the collection
-            self.collection = self.client.create_collection(
+            self.collection = self.chroma_client.create_collection(
                 name="messages",
                 metadata={"hnsw:space": "cosine", "dimension": 768}
             )
@@ -401,11 +423,11 @@ class EmbeddingService:
         """Reset the collection to ensure correct embedding dimensions"""
         try:
             # Reset the collection
-            self.client.reset()
+            self.chroma_client.reset()
             logger.info("Reset Chroma database")
             
             # Create new collection with correct dimensions
-            self.collection = self.client.create_collection(
+            self.collection = self.chroma_client.create_collection(
                 name="messages",
                 metadata={"hnsw:space": "cosine", "dimension": 768}
             )

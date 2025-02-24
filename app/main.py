@@ -70,27 +70,22 @@ def from_json_filter(value):
     except:
         return None
 
-def strftime_filter(value, format):
-    if not value:
-        return ""
-    
-    if isinstance(value, str):
-        try:
-            value = float(value)
-        except ValueError:
-            return value
-    
-    dt = datetime.fromtimestamp(value)
-    return dt.strftime(format)
+def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
+    """Format a date according to the given format."""
+    if isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(value)
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        return str(value)
+    return dt.strftime(fmt)
 
 templates.env.filters["timedelta"] = timedelta_filter
 templates.env.filters["from_json"] = from_json_filter
 templates.env.filters["strftime"] = strftime_filter
 
-# Initialize embedding service
-async def init_embedding_service():
-    global embedding_service
-    embedding_service = EmbeddingService()
+# Initialize embeddings service
+app.embeddings = EmbeddingService()
 
 # MongoDB connection
 @app.on_event("startup")
@@ -100,9 +95,21 @@ async def startup_db_client():
         app.mongodb_client = AsyncIOMotorClient(MONGO_URL)
         app.db = app.mongodb_client[MONGO_DB]
         logger.info(f"Connected to MongoDB at {MONGO_URL}")
+        
+        # Create indexes
+        await app.db.messages.create_index("conversation_id")
+        await app.db.messages.create_index("ts")
+        await app.db.messages.create_index("timestamp")
+        await app.db.messages.create_index([("text", "text")])
+        print("Created database indexes")
+        
+        # Initialize embeddings service
+        await app.embeddings.initialize()
+        logger.info("Connected to Chroma")
+        
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        raise
+        logger.error(f"Error connecting to database: {str(e)}")
+        raise e
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -130,7 +137,6 @@ async def startup_event():
     """Initialize database connection and create indexes"""
     await startup_db_client()
     await setup_indexes()
-    await init_embedding_service()
 
 @app.get("/")
 async def home(request: Request):
@@ -251,7 +257,6 @@ async def conversations(
     q: str = "",
     type: str = "all"
 ):
-    """List all conversations with pagination and filtering"""
     page_size = 20
     skip = (page - 1) * page_size
     
@@ -364,7 +369,7 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
     if q:
         try:
             # Perform semantic search
-            search_results = await embedding_service.search(
+            search_results = await app.embeddings.search(
                 query=q,
                 limit=50,
                 hybrid_alpha=hybrid_alpha
@@ -433,7 +438,7 @@ async def semantic_search(
         logger.info(f"Searching with query: {query}")
         
         # Perform hybrid search
-        results = await embedding_service.search(
+        results = await app.embeddings.search(
             query=query,
             limit=limit,
             hybrid_alpha=hybrid_alpha,
@@ -561,11 +566,7 @@ async def start_import(request: Request, upload_id: str):
                 async def update_error():
                     await db.uploads.update_one(
                         {"_id": upload_id},
-                        {"$set": {
-                            "status": "error",
-                            "error": str(e),
-                            "updated_at": datetime.utcnow()
-                        }}
+                        {"$set": {"status": "error", "error": str(e)}}
                     )
                 asyncio.create_task(update_error())
         
@@ -729,7 +730,7 @@ async def clear_data(request: Request):
             
         if clear_embeddings:
             # Clear Chroma collection
-            await embedding_service.clear_collection()
+            await app.embeddings.clear_collection()
             print("Cleared embeddings")
             
         if clear_uploads:
@@ -862,28 +863,115 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             pass
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/admin/embeddings/train")
-async def train_embeddings(request: Request):
-    """Train embeddings for all messages in the database"""
+@app.post("/admin/embeddings/train/{upload_id}")
+async def train_embeddings(request: Request, upload_id: str):
+    """Train embeddings for all messages from an import"""
     try:
-        # Get just 100 messages from MongoDB for testing
-        messages = await app.db.messages.find().limit(100).to_list(length=None)
-        logger.info(f"Found {len(messages)} messages to embed")
+        # Get import status from uploads collection
+        logger.info(f"Looking for upload {upload_id} in uploads collection")
+        query = {"_id": ObjectId(upload_id)}
+        logger.info(f"Query: {query}")
+        import_status = await app.db.uploads.find_one(query)
+        logger.info(f"Found import status: {import_status}")
         
-        # Train embeddings
-        await embedding_service.add_messages(messages)
-        
-        return {"status": "success", "message": f"Trained embeddings for {len(messages)} messages"}
+        if not import_status:
+            logger.error(f"Import {upload_id} not found in uploads collection")
+            raise HTTPException(status_code=404, detail="Import not found")
+
+        # Update status to running
+        logger.info("Updating status to running")
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "training_status": "running",
+                    "training_progress": 0,
+                    "training_started": datetime.utcnow(),
+                    "training_error": None
+                }
+            }
+        )
+
+        # Get all conversations
+        logger.info("Getting all conversations")
+        conversations = await app.db.conversations.find().to_list(length=None)
+        if not conversations:
+            logger.info("No conversations found, checking collection exists")
+            collections = await app.db.list_collection_names()
+            logger.info(f"Collections in database: {collections}")
+            sample = await app.db.messages.find_one()
+            logger.info(f"Sample message: {sample}")
+            raise Exception("No conversations found in database")
+            
+        conversation_ids = [conv["_id"] for conv in conversations]
+        logger.info(f"Found {len(conversation_ids)} conversations: {conversation_ids}")
+
+        # Get messages for all conversations
+        logger.info("Getting messages for all conversations")
+        messages = await app.db.messages.find({"conversation_id": {"$in": conversation_ids}}).to_list(length=None)
+        logger.info(f"Found {len(messages)} messages")
+
+        if not messages:
+            logger.error("No messages found in any conversations")
+            raise Exception("No messages found in any conversations")
+
+        # Add messages to ChromaDB
+        logger.info("Adding messages to ChromaDB")
+        try:
+            await app.embeddings.add_messages(messages)
+            logger.info("Successfully added messages to ChromaDB")
+        except Exception as e:
+            logger.error(f"Error adding messages to ChromaDB: {str(e)}")
+            raise
+
+        # Update status to completed
+        logger.info("Updating status to completed")
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {"training_status": "completed", "training_progress": 100}}
+        )
+        return {"status": "success"}
+
     except Exception as e:
         logger.error(f"Error training embeddings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "training_status": "failed",
+                    "training_error": f"Error training embeddings: {str(e)}"
+                }
+            }
+        )
+        raise HTTPException(status_code=500, detail=f"Error training embeddings: {str(e)}")
 
-@app.post("/admin/embeddings/reset")
-async def reset_embeddings(request: Request):
-    """Reset the embeddings collection"""
+@app.post("/admin/embeddings/reset/{upload_id}")
+async def reset_embeddings(request: Request, upload_id: str):
+    """Reset embeddings for an import"""
     try:
-        await embedding_service.reset_collection()
-        return {"status": "success", "message": "Reset embeddings collection"}
+        # Get import status
+        import_status = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not import_status:
+            raise HTTPException(status_code=404, detail="Import not found")
+            
+        # Reset status
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "training_status": None,
+                    "training_progress": 0,
+                    "training_started": None,
+                    "training_error": None
+                }
+            }
+        )
+        
+        # Reset ChromaDB collection
+        await app.embeddings.reset_collection()
+        
+        return {"status": "success"}
+        
     except Exception as e:
         logger.error(f"Error resetting embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -902,7 +990,7 @@ async def search_messages(
 ):
     """Search for messages using hybrid semantic + keyword search"""
     try:
-        results = await embedding_service.search(
+        results = await app.embeddings.search(
             query=query,
             limit=limit,
             hybrid_alpha=hybrid_alpha,

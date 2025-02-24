@@ -80,62 +80,71 @@
                         <tr data-upload-id="{{ upload._id }}">
                             <td>{{ upload.filename }}</td>
                             <td>
-                                {% if upload.status in ['IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
-                                <div>
-                                    <span class="badge bg-info mb-1">{{ upload.status | title }}</span>
-                                    {% if upload.progress %}
-                                    <div class="progress" style="height: 4px;">
-                                        {% set percent = upload.get('progress_percent', 0) %}
-                                        <div class="progress-bar progress-bar-striped {% if percent < 100 %}progress-bar-animated{% endif %}" 
-                                             role="progressbar" 
-                                             style="width: {{ percent }}%"
-                                             aria-valuenow="{{ percent }}"
-                                             aria-valuemin="0"
-                                             aria-valuemax="100"></div>
+                                {% if upload.status == "complete" %}
+                                    <div>
+                                        <span class="badge bg-success">Import Complete</span>
+                                        {% if upload.training_status %}
+                                            <div class="mt-2">
+                                                {% if upload.training_status == "running" %}
+                                                    <span class="badge bg-info mb-1">Training</span>
+                                                    <div class="progress" style="height: 4px;">
+                                                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                                             role="progressbar"
+                                                             style="width: {{ upload.training_progress }}%"
+                                                             aria-valuenow="{{ upload.training_progress }}"
+                                                             aria-valuemin="0"
+                                                             aria-valuemax="100"></div>
+                                                    </div>
+                                                    <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">{{ upload.training_progress }}% complete</small>
+                                                {% elif upload.training_status == "completed" %}
+                                                    <span class="badge bg-success">Training Complete</span>
+                                                {% elif upload.training_status == "failed" %}
+                                                    <span class="badge bg-danger">Training Failed</span>
+                                                    {% if upload.training_error %}
+                                                        <small class="text-danger d-block mt-1">{{ upload.training_error }}</small>
+                                                    {% endif %}
+                                                {% endif %}
+                                            </div>
+                                        {% endif %}
                                     </div>
-                                    <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">{{ upload.progress }}</small>
-                                    {% endif %}
-                                </div>
-                                {% elif upload.status == 'complete' %}
-                                <div>
-                                    <span class="badge bg-success">Complete</span>
-                                    {% if upload.progress and 'Imported 0 channels' in upload.progress %}
-                                    <span class="text-muted ms-2">No messages imported</span>
-                                    {% endif %}
-                                </div>
-                                {% elif upload.status == 'error' %}
-                                <div>
-                                    <span class="badge bg-danger" title="{{ upload.error }}">Error</span>
-                                </div>
-                                {% elif upload.status == 'UPLOADING' %}
-                                <span class="badge bg-primary">Uploading</span>
-                                {% elif upload.status == 'UPLOADED' %}
-                                <div>
-                                    <span class="badge bg-secondary">Uploaded</span>
-                                </div>
-                                {% elif upload.status == 'cancelled' %}
-                                <div>
-                                    <span class="badge bg-warning">Cancelled</span>
-                                </div>
+                                {% elif upload.status == "importing" %}
+                                    <div>
+                                        <span class="badge bg-info">Importing</span>
+                                        <div class="progress mt-2" style="height: 4px;">
+                                            <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                                 role="progressbar"
+                                                 style="width: {{ upload.progress_percent }}%"
+                                                 aria-valuenow="{{ upload.progress_percent }}"
+                                                 aria-valuemin="0"
+                                                 aria-valuemax="100"></div>
+                                        </div>
+                                        <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">{{ upload.progress }}</small>
+                                    </div>
+                                {% elif upload.status == "error" %}
+                                    <div>
+                                        <span class="badge bg-danger">Error</span>
+                                        {% if upload.error %}
+                                            <small class="text-danger d-block mt-1">{{ upload.error }}</small>
+                                        {% endif %}
+                                    </div>
                                 {% else %}
-                                <span class="badge bg-secondary">{{ upload.status }}</span>
+                                    <span class="badge bg-secondary">{{ upload.status }}</span>
                                 {% endif %}
                             </td>
-                            <td>{{ "{:,.0f}".format(upload.size / 1024 / 1024) }} MB</td>
-                            <td>{{ upload.created_at | timedelta }}</td>
-                            <td class="text-end">
-                                {% if upload.status in ['IMPORTING', 'importing_channels', 'extracting', 'generating_embeddings'] %}
-                                <form action="/admin/import/{{ upload._id }}/cancel" method="post" style="display: inline;">
-                                    <button type="submit" class="btn btn-sm btn-warning">Cancel</button>
-                                </form>
-                                {% elif upload.status in ['UPLOADED', 'cancelled', 'error'] or (upload.status == 'complete' and upload.progress and 'Imported 0 channels' in upload.progress) %}
-                                <form class="import-form" style="display: inline;">
-                                    <input type="hidden" name="upload_id" value="{{ upload._id }}">
-                                    <button type="submit" class="btn btn-sm btn-primary">
-                                        {% if upload.status == 'UPLOADED' %}Start Import
-                                        {% else %}Retry Import{% endif %}
-                                    </button>
-                                </form>
+                            <td>{{ upload.size|filesizeformat }}</td>
+                            <td>{{ upload.created_at|strftime("%Y-%m-%d %H:%M:%S") }}</td>
+                            <td>
+                                {% if upload.status == "complete" %}
+                                    <div class="btn-group" role="group">
+                                        {% if not upload.training_status or upload.training_status == "failed" %}
+                                            <button class="btn btn-sm btn-primary train-button" data-upload-id="{{ upload._id }}">
+                                                Train Embeddings
+                                            </button>
+                                        {% endif %}
+                                        <button class="btn btn-sm btn-danger reset-button" data-upload-id="{{ upload._id }}">
+                                            Reset Embeddings
+                                        </button>
+                                    </div>
                                 {% endif %}
                             </td>
                         </tr>
@@ -306,8 +315,139 @@ document.querySelectorAll('.import-form').forEach(form => {
     });
 });
 
+// Handle training button clicks
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.train-button').forEach(button => {
+        button.addEventListener('click', async (e) => {
+            const uploadId = e.target.dataset.uploadId;
+            const row = document.querySelector(`tr[data-upload-id="${uploadId}"]`);
+            
+            try {
+                // Disable button and show loading state
+                e.target.disabled = true;
+                e.target.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting...';
+                
+                // Start training
+                const response = await fetch(`/admin/embeddings/train/${uploadId}`, {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Training failed: ${response.statusText}`);
+                }
+                
+                // Training started successfully, update UI
+                const statusCell = row.querySelector('td:nth-child(2)');
+                statusCell.innerHTML = `
+                    <div>
+                        <span class="badge bg-success">Import Complete</span>
+                        <div class="mt-2">
+                            <span class="badge bg-info mb-1">Training</span>
+                            <div class="progress" style="height: 4px;">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                     role="progressbar"
+                                     style="width: 0%"
+                                     aria-valuenow="0"
+                                     aria-valuemin="0"
+                                     aria-valuemax="100"></div>
+                            </div>
+                            <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">0% complete</small>
+                        </div>
+                    </div>
+                `;
+                
+            } catch (error) {
+                // Show error state
+                e.target.disabled = false;
+                e.target.classList.remove('btn-primary');
+                e.target.classList.add('btn-danger');
+                e.target.innerHTML = 'Failed to Start Training';
+                console.error('Training error:', error);
+            }
+        });
+    });
+
+    document.querySelectorAll('.reset-button').forEach(button => {
+        button.addEventListener('click', async function() {
+            if (!confirm('Are you sure you want to reset embeddings? This will delete all existing embeddings.')) {
+                return;
+            }
+            const uploadId = this.dataset.uploadId;
+            try {
+                const response = await fetch(`/admin/embeddings/reset/${uploadId}`, {
+                    method: 'POST'
+                });
+                if (!response.ok) {
+                    throw new Error('Failed to reset embeddings');
+                }
+                // Refresh the page after reset
+                window.location.reload();
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error resetting embeddings: ' + error.message);
+            }
+        });
+    });
+});
+
+// Update training progress in status polling
+async function pollImportStatus() {
+    const rows = document.querySelectorAll('tr[data-upload-id]');
+    if (rows.length === 0) return;
+    
+    try {
+        const response = await fetch('/admin/imports/status');
+        const imports = await response.json();
+        
+        imports.forEach(importStatus => {
+            const row = document.querySelector(`tr[data-upload-id="${importStatus._id}"]`);
+            if (!row) return;
+            
+            const statusCell = row.querySelector('td:nth-child(2)');
+            
+            // Update training progress if running
+            if (importStatus.training_status === 'running') {
+                const progressBar = statusCell.querySelector('.progress-bar');
+                const progressText = statusCell.querySelector('small.text-muted');
+                if (progressBar && progressText) {
+                    const percent = importStatus.training_progress || 0;
+                    progressBar.style.width = `${percent}%`;
+                    progressBar.setAttribute('aria-valuenow', percent);
+                    progressText.textContent = `${percent}% complete`;
+                }
+            }
+            // Update status if completed or failed
+            else if (importStatus.training_status === 'completed') {
+                statusCell.innerHTML = `
+                    <div>
+                        <span class="badge bg-success">Import Complete</span>
+                        <span class="badge bg-success ms-1">Training Complete</span>
+                    </div>
+                `;
+            }
+            else if (importStatus.training_status === 'failed') {
+                statusCell.innerHTML = `
+                    <div>
+                        <span class="badge bg-success">Import Complete</span>
+                        <span class="badge bg-danger ms-1">Training Failed</span>
+                        <small class="text-danger d-block mt-1" style="font-size: 0.75rem;">${importStatus.training_error || 'Unknown error'}</small>
+                        <button class="btn btn-sm btn-primary ms-2 train-button" data-upload-id="${importStatus._id}">
+                            Train Embeddings
+                        </button>
+                        <button class="btn btn-sm btn-danger ms-2 reset-button" data-upload-id="${importStatus._id}">
+                            Reset Embeddings
+                        </button>
+                    </div>
+                `;
+            }
+        });
+    } catch (error) {
+        console.error('Error polling import status:', error);
+    }
+}
+
 // Poll for import status updates
-function pollImportStatus() {
+async function pollImportStatus() {
     const importingRows = document.querySelectorAll('tr[data-upload-id]');
     
     importingRows.forEach(row => {
@@ -361,6 +501,7 @@ function pollImportStatus() {
 // Start polling if there are any imports in progress
 const hasActiveImports = document.querySelector('tr[data-upload-id]') !== null;
 if (hasActiveImports) {
+    pollImportStatus();
     setInterval(pollImportStatus, 2000);
 }
 </script>
