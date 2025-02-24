@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             try {
                 // Make search request
-                const response = await fetch('/search', {
+                const response = await fetch('/api/v1/search', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

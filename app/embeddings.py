@@ -216,7 +216,7 @@ class EmbeddingService:
                         "channel": msg.get("channel", ""),
                         "user": msg.get("user", ""),
                         "thread_ts": msg.get("thread_ts", ""),
-                        "timestamp": msg.get("timestamp", ""),  # Already a string
+                        "timestamp": float(msg.get("ts", 0)) if msg.get("ts") else 0,  # Convert to float
                         "text": msg.get("text", ""),
                     } for msg in batch]
                     
@@ -274,14 +274,17 @@ class EmbeddingService:
         
         return messages
     
-    async def search(self, query: str, limit: int = 10, hybrid_alpha: float = 0.5, 
-                    filter_channels: Optional[List[str]] = None,
-                    filter_users: Optional[List[str]] = None,
-                    filter_has_files: Optional[bool] = None,
-                    filter_has_reactions: Optional[bool] = None,
-                    filter_in_thread: Optional[bool] = None,
-                    filter_date_range: Optional[tuple[datetime, datetime]] = None) -> List[Dict[str, Any]]:
-        """Search for messages using hybrid semantic + keyword search with filtering"""
+    async def search(self, query: str, limit: int = 10, hybrid_alpha: float = 0.5) -> List[Dict[str, Any]]:
+        """Search for messages using hybrid semantic + keyword search
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results to return
+            hybrid_alpha: Balance between semantic (alpha) and keyword (1-alpha) search
+            
+        Returns:
+            List of results with text, metadata, and similarity score
+        """
         try:
             logger.info(f"Searching for '{query}' with limit={limit}, hybrid_alpha={hybrid_alpha}")
             
@@ -289,23 +292,69 @@ class EmbeddingService:
             count = self.collection.count()
             logger.info(f"Collection has {count} documents")
             
-            # Get query embedding
-            query_embedding = await self.generate_embedding(query)
-            logger.info(f"Generated query embedding with {len(query_embedding)} dimensions")
+            # Format and combine results
+            all_results = []
             
-            # Search
-            results = self.collection.query(
-                query_embeddings=[query_embedding.tolist()],
-                n_results=limit,
-                include=['documents', 'metadatas', 'distances']
-            )
-            logger.info(f"Got {len(results['ids'][0])} results from Chroma")
+            # Do semantic search if hybrid_alpha > 0
+            if hybrid_alpha > 0:
+                # Get query embedding for semantic search
+                query_embedding = await self.generate_embedding(query)
+                logger.info(f"Generated query embedding with {len(query_embedding)} dimensions")
+                
+                # Get more results than needed since we'll combine them
+                expanded_limit = min(limit * 2, count)
+                
+                # Semantic search
+                semantic_results = self.collection.query(
+                    query_embeddings=[query_embedding.tolist()],
+                    n_results=expanded_limit,
+                    include=['documents', 'metadatas', 'distances']
+                )
+                logger.info(f"Got {len(semantic_results['ids'][0])} semantic results from Chroma")
+                
+                # Add semantic results
+                if semantic_results["ids"] and semantic_results["ids"][0]:
+                    for i in range(len(semantic_results["ids"][0])):
+                        # Skip test messages
+                        if semantic_results["documents"][0][i].strip().lower() == "test message":
+                            continue
+                            
+                        all_results.append({
+                            "text": semantic_results["documents"][0][i],
+                            "metadata": semantic_results["metadatas"][0][i],
+                            "similarity": hybrid_alpha * (1 - semantic_results["distances"][0][i]),  # Weight semantic score by alpha
+                            "keyword_match": False
+                        })
             
-            return []  # Temporary return empty list until we fix the issue
+            # Do keyword search if hybrid_alpha < 1
+            if hybrid_alpha < 1:
+                # Get all documents to search through
+                all_docs = self.collection.get(
+                    include=['documents', 'metadatas']
+                )
+                
+                # Simple substring search
+                query_lower = query.lower()
+                for i in range(len(all_docs["documents"])):
+                    text = all_docs["documents"][i].lower()
+                    if query_lower in text:
+                        # Check if this result is already in all_results
+                        if not any(r.get("text") == all_docs["documents"][i] for r in all_results):
+                            all_results.append({
+                                "text": all_docs["documents"][i],
+                                "metadata": all_docs["metadatas"][i],
+                                "similarity": (1 - hybrid_alpha),  # Full score for exact matches
+                                "keyword_match": True
+                            })
+            
+            # Sort by combined score and take top results
+            all_results.sort(key=lambda x: x["similarity"], reverse=True)
+            return all_results[:limit]
+            
         except Exception as e:
             logger.error(f"Error searching: {str(e)}")
             raise
-
+    
     async def delete_all(self):
         """Delete all embeddings from the collection"""
         logger.info("Clearing existing embeddings...")

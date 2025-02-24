@@ -362,34 +362,48 @@ async def files(request: Request, q: str = ""):
 async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
     results = []
     if q:
-        # Perform search
-        results = await app.db.messages.find(
-            {
-                "$text": {
-                    "$search": q
-                }
-            },
-            {
-                "score": {"$meta": "textScore"},
-                "text": 1,
-                "user": 1,
-                "ts": 1,
-                "conversation_id": 1
-            }
-        ).sort([("score", {"$meta": "textScore"})]).limit(50).to_list(50)
-
-        # Get conversation details for each result
-        conversation_ids = list(set(r["conversation_id"] for r in results))
-        conversations = await app.db.conversations.find(
-            {"_id": {"$in": conversation_ids}},
-            {"name": 1, "type": 1}
-        ).to_list(None)
-        conv_map = {str(c["_id"]): c for c in conversations}
-
-        # Attach conversation info to results
-        for r in results:
-            r["conversation"] = conv_map.get(str(r["conversation_id"]), {"name": "Unknown", "type": "unknown"})
-            r["ts"] = float(r["ts"])
+        try:
+            # Perform semantic search
+            search_results = await embedding_service.search(
+                query=q,
+                limit=50,
+                hybrid_alpha=hybrid_alpha
+            )
+            
+            # Extract conversation IDs from results
+            conversation_ids = list(set(r["metadata"]["channel"] for r in search_results))
+            
+            # Get conversation details
+            conversations = await app.db.conversations.find(
+                {"_id": {"$in": conversation_ids}},
+                {"name": 1, "type": 1}
+            ).to_list(None)
+            conv_map = {str(c["_id"]): c for c in conversations}
+            
+            # Format results for template
+            results = []
+            for r in search_results:
+                try:
+                    ts = float(r["metadata"]["timestamp"]) if r["metadata"]["timestamp"] and r["metadata"]["timestamp"].replace('.','').isdigit() else 0
+                except (ValueError, TypeError):
+                    ts = 0
+                    logger.warning(f"Could not parse timestamp: {r['metadata']['timestamp']}")
+                
+                results.append({
+                    "text": r["text"],
+                    "conversation": conv_map.get(str(r["metadata"]["channel"]), {"name": "Unknown", "type": "unknown"}),
+                    "conversation_id": r["metadata"]["channel"],
+                    "user": r["metadata"]["user"],
+                    "ts": ts,
+                    "score": r["similarity"],
+                    "keyword_match": r.get("keyword_match", False)
+                })
+            
+            # Sort results by score
+            results.sort(key=lambda x: x["score"], reverse=True)
+        except Exception as e:
+            logger.error(f"Error in search_page: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
     return templates.TemplateResponse(
         "search.html",
