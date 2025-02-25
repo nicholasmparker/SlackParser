@@ -606,31 +606,34 @@ async def start_import(request: Request, upload_id: str):
         upload = await db.uploads.find_one({"_id": upload_id})
         
         if not upload:
-            raise HTTPException(status_code=404, detail="Upload not found")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Upload not found"}
+            )
             
         # Only allow starting import if file is in a valid state
         valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING"]
         if upload["status"] not in valid_states:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot start import for file in state: {upload['status']}. Must be one of: {', '.join(valid_states)}"
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Cannot start import for file in state: {upload['status']}. Must be one of: {', '.join(valid_states)}"}
             )
             
         # Allow reimport if previous import had 0 messages or failed
         if upload["status"] == "complete":
             if upload.get("progress") and "Imported 0" not in upload["progress"]:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=400,
-                    detail="Cannot reimport file that has already been successfully imported"
+                    content={"detail": "Cannot reimport file that has already been successfully imported"}
                 )
         
         # Reset import state
         await db.uploads.update_one(
             {"_id": upload_id},
             {"$set": {
-                "status": "extracting",
+                "status": "IMPORTING",
                 "error": None,
-                "progress": "Starting ZIP extraction...",
+                "progress": "Starting import...",
                 "progress_percent": 0,
                 "updated_at": datetime.utcnow()
             }}
@@ -649,34 +652,30 @@ async def start_import(request: Request, upload_id: str):
         # Add error handling for the background task
         def handle_import_completion(task):
             try:
-                result = task.result()
-                print(f"Import task completed successfully: {result}")
-            except asyncio.CancelledError:
-                print("Import task was cancelled")
+                task.result()  # This will raise any exceptions from the task
             except Exception as e:
-                print(f"Import task failed with error: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                
-                # Update upload status on error
-                async def update_error():
-                    await db.uploads.update_one(
+                logger.exception("Import failed")
+                asyncio.create_task(
+                    db.uploads.update_one(
                         {"_id": upload_id},
-                        {"$set": {"status": "error", "error": str(e)}}
+                        {"$set": {
+                            "status": "error",
+                            "error": str(e),
+                            "updated_at": datetime.utcnow()
+                        }}
                     )
-                asyncio.create_task(update_error())
+                )
         
         task.add_done_callback(handle_import_completion)
         
-        return {"status": "Import started"}
+        return {"status": "started"}
         
     except Exception as e:
         logger.exception("Error starting import")
-        await db.uploads.update_one(
-            {"_id": upload_id},
-            {"$set": {"status": "error", "error": str(e)}}
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)}
         )
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/import/{upload_id}/status")
 async def get_import_status(upload_id: str):
@@ -704,14 +703,17 @@ async def cancel_import(request: Request, upload_id: str):
         upload = await db.uploads.find_one({"_id": upload_id})
         
         if not upload:
-            raise HTTPException(status_code=404, detail="Upload not found")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Upload not found"}
+            )
             
         # Only allow cancelling if in an active state
         active_states = ["extracting", "importing_channels", "importing_dms", "generating_embeddings", "IMPORTING"]
         if upload["status"] not in active_states:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail=f"Cannot cancel import that is not in progress. Current status: {upload['status']}"
+                content={"detail": f"Cannot cancel import that is not in progress. Current status: {upload['status']}"}
             )
             
         # Update status to cancelled
@@ -732,7 +734,10 @@ async def cancel_import(request: Request, upload_id: str):
         
     except Exception as e:
         logger.exception("Error cancelling import")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)}
+        )
 
 @app.get("/debug/conversations")
 async def debug_conversations():

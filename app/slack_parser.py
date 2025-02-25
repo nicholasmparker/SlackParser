@@ -28,14 +28,17 @@ class SlackMessageParser:
             for user_id, user_name in user_map.items():
                 text = text.replace(f"<@{user_id}>", f"@{user_name}")
         
-        # Remove remaining user mentions
+        # Remove user mentions
         text = re.sub(r'<@([A-Z0-9]+)>', r'@\1', text)
         
         # Remove channel mentions
         text = re.sub(r'<#[A-Z0-9]+\|([^>]+)>', r'#\1', text)
         
-        # Convert URLs to readable format
-        text = re.sub(r'<(https?://[^|>]+)\|([^>]+)>', r'\2 (\1)', text)
+        # Handle bot names
+        text = re.sub(r'\[<([^>]+)> bot\]', r'[\1]', text)
+        
+        # Convert URLs to readable format - handle both formats
+        text = re.sub(r'<(https?://[^|>]+)\|([^>]+)>', r'\2', text)  
         text = re.sub(r'<(https?://[^>]+)>', r'\1', text)
         
         # Remove any remaining angle brackets

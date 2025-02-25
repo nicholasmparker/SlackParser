@@ -97,11 +97,42 @@ async def parse_message(line):
                 'type': action
             }
         
-        # Handle standard messages
-        user_match = re.match(r'<(.+?)> (.*)', remaining)
+        # Handle bot messages
+        bot_match = re.match(r'\[<(.+?)> bot\] (.*)', remaining)
+        if bot_match:
+            bot_name = bot_match.group(1)
+            text = bot_match.group(2)
+            return {
+                'ts': str(ts),
+                'timestamp': timestamp,
+                'user': f"{bot_name} Bot",
+                'text': text,
+                'type': 'message',
+                'is_bot': True
+            }
+            
+        # Handle channel join messages
+        join_match = re.match(r'([\w.-]+) joined the channel', remaining)
+        if join_match:
+            username = join_match.group(1)
+            return {
+                'ts': str(ts),
+                'timestamp': timestamp,
+                'user': username,
+                'text': 'joined the channel',
+                'type': 'channel_join'
+            }
+            
+        # Handle standard messages - now with support for dots in usernames and mentions
+        user_match = re.match(r'<([\w.-]+)> (.*)', remaining)
         if user_match:
             user = user_match.group(1)
             text = user_match.group(2)
+            
+            # Clean up Slack mentions
+            text = re.sub(r'<!subteam\^[A-Z0-9]+\|@[\w-]+>', lambda m: m.group(0).split('|')[1], text)  # Convert <!subteam^ABC123|@group> to @group
+            text = re.sub(r'<mailto:([^|>]+)\|[^>]+>', r'\1', text)  # Convert <mailto:email@example.com|email@example.com> to email@example.com
+            
             return {
                 'ts': str(ts),
                 'timestamp': timestamp,
