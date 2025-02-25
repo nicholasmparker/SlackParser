@@ -1,69 +1,64 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container py-4">
+<div class="max-w-7xl mx-auto px-4 py-4">
     <!-- Search Info -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <h5 class="card-title mb-3">About Search</h5>
-            <p class="text-muted mb-3">This search combines two powerful methods:</p>
-            <ul class="text-muted mb-3">
-                <li><strong>Keyword Search:</strong> Finds exact word matches (like traditional search)</li>
-                <li><strong>AI Search:</strong> Understands meaning and finds conceptually related messages</li>
-            </ul>
-            <p class="text-muted mb-0">Use the slider below to balance between these methods based on your needs.</p>
-        </div>
+    <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700">
+        <h3 class="text-lg font-medium text-gray-100 mb-3">About Search</h3>
+        <p class="text-gray-400 mb-3">This search combines two powerful methods:</p>
+        <ul class="text-gray-400 mb-3 list-disc pl-5 space-y-1">
+            <li><span class="text-gray-100">Keyword Search:</span> Finds exact word matches (like traditional search)</li>
+            <li><span class="text-gray-100">AI Search:</span> Understands meaning and finds conceptually related messages</li>
+        </ul>
+        <p class="text-gray-400 mb-0">Use the slider below to balance between these methods based on your needs.</p>
     </div>
 
     <!-- Search Form -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <form id="searchForm">
-                <!-- Search Input -->
-                <div class="mb-4">
-                    <input type="text" 
-                           class="form-control form-control-lg" 
-                           id="query" 
-                           name="q" 
-                           value="{{ query }}"
-                           placeholder="Enter your search query...">
-                </div>
+    <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700">
+        <form id="searchForm" class="space-y-6">
+            <!-- Search Input -->
+            <div>
+                <input type="text" 
+                       class="w-full bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-4 py-3 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] transition-colors" 
+                       id="query" 
+                       name="q" 
+                       value="{{ query }}"
+                       placeholder="Enter your search query...">
+            </div>
 
-                <!-- Search Balance -->
-                <div class="mb-4">
-                    <label class="form-label">Search Balance</label>
-                    <div class="d-flex align-items-center gap-3">
-                        <span class="text-muted">Keyword Search</span>
-                        <input type="range" 
-                               class="form-range flex-grow-1" 
-                               id="hybrid_alpha" 
-                               name="hybrid_alpha" 
-                               min="0" 
-                               max="1" 
-                               step="0.1" 
-                               value="{{ hybrid_alpha }}">
-                        <span class="text-muted">AI Search</span>
-                    </div>
-                    <div class="text-center text-muted small" id="hybrid_value"></div>
+            <!-- Search Balance -->
+            <div>
+                <label class="block text-gray-100 mb-2">Search Balance</label>
+                <div class="flex items-center gap-4">
+                    <span class="text-gray-400 text-sm">Keyword Search</span>
+                    <input type="range" 
+                           class="flex-1 h-2 bg-[#1A1D21] rounded-lg appearance-none cursor-pointer accent-[#1264a3]" 
+                           id="hybrid_alpha" 
+                           name="hybrid_alpha" 
+                           min="0" 
+                           max="1" 
+                           step="0.1" 
+                           value="{{ hybrid_alpha }}">
+                    <span class="text-gray-400 text-sm">AI Search</span>
                 </div>
+                <div class="text-center text-gray-400 text-sm mt-1" id="hybrid_value"></div>
+            </div>
 
-                <!-- Submit Button -->
-                <div class="text-center">
-                    <button type="submit" class="btn btn-primary btn-lg px-4">
-                        Search Messages
-                    </button>
-                </div>
-            </form>
-        </div>
+            <!-- Submit Button -->
+            <div class="text-center">
+                <button type="submit" 
+                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-6 py-2 rounded transition-colors text-lg">
+                    Search Messages
+                </button>
+            </div>
+        </form>
     </div>
 
     <!-- Loading State -->
-    <div id="searchLoading" class="d-none">
-        <div class="text-center py-5">
-            <div class="spinner-border text-primary mb-3" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="text-muted mb-0">Searching...</p>
+    <div id="searchLoading" class="hidden">
+        <div class="text-center py-8">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-[#1264a3] border-t-transparent mb-3"></div>
+            <p class="text-gray-400">Searching...</p>
         </div>
     </div>
 
@@ -71,53 +66,38 @@
     <div id="searchResults">
         {% if results %}
             {% for result in results %}
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-3">
-                        <div class="d-flex gap-3">
-                            <div class="message-channel">
-                                {% if result.conversation.type == 'channel' %}#{% endif %}{{ result.conversation.name }}
-                            </div>
-                            <div class="message-user text-muted">
-                                {{ result.user_name or result.user }}
-                            </div>
-                            <div class="message-time text-muted">
-                                {{ result.ts|timedelta }}
-                            </div>
+            <div class="bg-[#222529] rounded-lg p-4 mb-4 border border-gray-700 hover:border-gray-600 transition-all">
+                <div class="flex justify-between items-start mb-3">
+                    <div class="flex gap-4 text-sm">
+                        <div class="text-gray-100">
+                            {% if result.conversation.type == 'channel' %}#{% endif %}{{ result.conversation.name }}
                         </div>
-                        <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" 
-                           class="btn btn-outline-primary btn-sm">
-                            View in context
-                        </a>
+                        <div class="text-gray-400">
+                            {{ result.user_name or result.user }}
+                        </div>
+                        <div class="text-gray-400">
+                            {{ result.ts|timedelta }}
+                        </div>
                     </div>
-                    <div class="d-flex justify-content-between align-items-start">
-                        <h5 class="card-title mb-1">
-                            <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}">{{ result.conversation.name }}</a>
-                            {% if result.keyword_match %}
-                            <span class="badge bg-primary ms-2" title="Keyword Match">K</span>
-                            {% else %}
-                            <span class="badge bg-success ms-2" title="Semantic Match">S</span>
-                            {% endif %}
-                        </h5>
-                        <small class="text-muted">Score: {{ "%.2f"|format(result.score) }}</small>
-                    </div>
-                    <div class="message-text">
-                        {% if result.text.startswith('```') and result.text.endswith('```') %}
-                            <pre class="bg-gray-50 p-3 rounded-md overflow-x-auto"><code>{{ result.text[3:-3] }}</code></pre>
-                        {% else %}
-                            {{ result.text }}
-                        {% endif %}
-                    </div>
-                    <div class="mt-2">
-                        <small class="text-muted">{{ result.user }}</small>
-                        {% if result.ts %}
-                        <small class="text-muted ms-2">{{ result.ts|strftime("%Y-%m-%d %H:%M:%S") }}</small>
-                        {% endif %}
-                        <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" class="ms-2">
-                            View in context
-                        </a>
-                    </div>
+                    <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" 
+                       class="text-[#1264a3] hover:text-[#0b4d82] text-sm transition-colors">
+                        View in context
+                    </a>
                 </div>
+                <div class="flex justify-between items-start">
+                    <h5 class="text-lg font-medium text-gray-100 mb-1">
+                        <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" 
+                           class="hover:text-white transition-colors">
+                            {{ result.conversation.name }}
+                        </a>
+                        {% if result.keyword_match %}
+                        <span class="bg-[#1264a3]/50 text-white text-xs px-2 py-0.5 rounded-full ml-2" title="Keyword Match">K</span>
+                        {% else %}
+                        <span class="bg-green-900/50 text-green-100 text-xs px-2 py-0.5 rounded-full ml-2" title="Semantic Match">S</span>
+                        {% endif %}
+                    </h5>
+                </div>
+                <div class="text-gray-300 mt-2">{{ result.text }}</div>
             </div>
             {% endfor %}
         {% endif %}

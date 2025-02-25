@@ -1,16 +1,25 @@
 /* Base styles */
 :root {
+    --dark-bg: #1A1D21;
+    --dark-surface: #222529;
+    --dark-border: #424242;
+    --slack-blue: #1264a3;
     --slack-purple: #611f69;
     --slack-purple-dark: #4a154b;
-    --slack-blue: #1264a3;
     --slack-green: #2eb67d;
     --slack-yellow: #ecb22e;
     --slack-red: #e01e5a;
 }
 
-body {
-    background-color: #f8f9fa;
+body, html {
+    background-color: var(--dark-bg) !important;
+    color: #e5e5e5;
+    min-height: 100vh;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+main {
+    background-color: var(--dark-bg) !important;
 }
 
 /* Navigation */
@@ -44,8 +53,9 @@ body {
 
 /* Cards */
 .card {
-    border: none;
-    border-radius: 8px;
+    background-color: var(--dark-surface) !important;
+    border: 1px solid var(--dark-border);
+    border-radius: 6px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
     margin-bottom: 1.5rem;
     transition: all 0.3s cubic-bezier(.25,.8,.25,1);
@@ -60,7 +70,7 @@ body {
 }
 
 .card-title {
-    color: var(--slack-purple);
+    color: #e5e5e5;
     font-weight: 600;
     margin-bottom: 1rem;
 }
@@ -81,6 +91,7 @@ body {
 .btn-primary {
     background-color: var(--slack-purple);
     border-color: var(--slack-purple);
+    color: white;
 }
 
 .btn-primary:hover {
@@ -91,18 +102,22 @@ body {
 .btn-danger {
     background-color: var(--slack-red);
     border-color: var(--slack-red);
+    color: white;
 }
 
 /* Forms */
 .form-control {
+    background-color: var(--dark-surface) !important;
+    border: 1px solid var(--dark-border) !important;
     border-radius: 6px;
-    border: 1px solid #dee2e6;
+    color: #e5e5e5 !important;
     padding: 0.75rem 1rem;
 }
 
 .form-control:focus {
-    border-color: var(--slack-purple);
-    box-shadow: 0 0 0 0.25rem rgba(97, 31, 105, 0.25);
+    border-color: var(--slack-blue);
+    box-shadow: none;
+    outline: none;
 }
 
 .form-check-input:checked {
@@ -110,20 +125,31 @@ body {
     border-color: var(--slack-purple);
 }
 
+input, textarea, select {
+    background-color: var(--dark-surface) !important;
+    border: 1px solid var(--dark-border) !important;
+    color: #e5e5e5 !important;
+}
+
+input::placeholder, textarea::placeholder {
+    color: #6b7280 !important;
+}
+
 /* Tables */
 .table {
+    color: #e5e5e5;
     margin-bottom: 0;
 }
 
 .table > :not(caption) > * > * {
     padding: 1rem;
-    border-bottom-color: #dee2e6;
+    border-bottom-color: var(--dark-border);
 }
 
 .table > thead > tr > th {
-    background-color: #f8f9fa;
-    border-bottom: 2px solid #dee2e6;
-    color: #495057;
+    background-color: var(--dark-surface);
+    border-bottom: 2px solid var(--dark-border);
+    color: #e5e5e5;
     font-weight: 600;
 }
 
@@ -164,12 +190,12 @@ body {
     padding: 1rem;
     margin-bottom: 0.5rem;
     border-radius: 6px !important;
-    background-color: #fff;
+    background-color: var(--dark-surface);
     transition: all 0.2s ease;
 }
 
 .list-group-item:hover {
-    background-color: #f8f9fa;
+    background-color: #2c2f33;
 }
 
 .list-group-item .form-check-input:checked {
@@ -209,8 +235,8 @@ a {
 }
 
 a:hover {
-    color: var(--slack-purple);
-    text-decoration: none;
+    color: #2c88c7;
+    text-decoration: underline;
 }
 
 /* Message Formatting */
@@ -229,4 +255,22 @@ pre code {
 
 .message-text a:hover {
     text-decoration: underline;
+}
+
+/* Code blocks */
+pre {
+    background-color: var(--dark-surface);
+    border: 1px solid var(--dark-border);
+    border-radius: 6px;
+    color: #e5e5e5;
+    padding: 1rem;
+    margin: 1rem 0;
+    overflow-x: auto;
+}
+
+code {
+    background-color: var(--dark-surface);
+    border-radius: 4px;
+    color: #e5e5e5;
+    padding: 0.2rem 0.4rem;
 }

@@ -74,14 +74,52 @@ def from_json_filter(value):
         return None
 
 def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
-    """Format a date according to the given format."""
-    if isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(value)
-    elif isinstance(value, datetime):
-        dt = value
-    else:
+    """Format a date according to the given format.
+    
+    For messages, we follow Slack's display logic:
+    - Messages from today: show only time (3:56 PM)
+    - Messages from this week: show day and time (Wed 3:56 PM)
+    - Older messages: show date and time (Feb 24, 3:56 PM)
+    """
+    if not value:
+        return ""
+        
+    try:
+        # Convert timestamp to datetime if needed
+        if isinstance(value, str):
+            # Try parsing as float first (Unix timestamp)
+            try:
+                value = float(value)
+            except ValueError:
+                # If not a float, try parsing as datetime string
+                try:
+                    value = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    return value
+                
+        if isinstance(value, (int, float)):
+            value = datetime.fromtimestamp(float(value))
+            
+        if not isinstance(value, datetime):
+            return str(value)
+            
+        now = datetime.now()
+        
+        # Messages from today
+        if value.date() == now.date():
+            return value.strftime("%I:%M %p").lstrip("0")
+            
+        # Messages from this week
+        elif (now - value).days < 7:
+            return value.strftime("%a %I:%M %p").lstrip("0")
+            
+        # Older messages
+        else:
+            return value.strftime("%b %d, %I:%M %p").lstrip("0")
+            
+    except Exception as e:
+        print(f"Error formatting timestamp: {str(e)}")
         return str(value)
-    return dt.strftime(fmt)
 
 templates.env.filters["timedelta"] = timedelta_filter
 templates.env.filters["from_json"] = from_json_filter
@@ -181,14 +219,26 @@ async def view_conversation(
         {"$match": {"_id": conversation_id}},
         {"$project": {
             "_id": 1,
-            "name": {"$ifNull": ["$name", "$_id"]},  # Use _id as fallback if name is null
+            "name": {"$ifNull": ["$name", "$_id"]},
             "type": 1,
             "display_name": {
                 "$cond": {
                     "if": {"$eq": ["$type", "dm"]},
                     "then": {
                         "$reduce": {
-                            "input": {"$split": [{"$ifNull": ["$name", "$_id"]}, "-"]},
+                            "input": {
+                                "$map": {
+                                    "input": {"$split": [{"$ifNull": ["$name", "$_id"]}, "-"]},
+                                    "as": "name",
+                                    "in": {
+                                        "$cond": {
+                                            "if": {"$regexMatch": {"input": "$$name", "regex": "^U\\d+"}},
+                                            "then": {"$substrCP": ["$$name", 0, 2]},  # Just take U7 from U7WB86M7W
+                                            "else": "$$name"
+                                        }
+                                    }
+                                }
+                            },
                             "initialValue": "",
                             "in": {
                                 "$cond": {
@@ -245,12 +295,25 @@ async def view_conversation(
             "foreignField": "_id",
             "as": "user_info"
         }},
-        # Add user name field
+        # Add user display info
         {"$addFields": {
+            "user": {
+                "$cond": {
+                    "if": {"$regexMatch": {"input": "$user", "regex": "^U\\d+"}},
+                    "then": {"$substrCP": ["$user", 0, 2]},  # Just take U7 from U7WB86M7W
+                    "else": "$user"
+                }
+            },
             "user_name": {
                 "$ifNull": [
                     {"$arrayElemAt": ["$user_info.name", 0]},
-                    "$user"  # Fallback to user ID if no user found
+                    {
+                        "$cond": {
+                            "if": {"$regexMatch": {"input": "$user", "regex": "^U\\d+"}},
+                            "then": {"$substrCP": ["$user", 0, 2]},  # Just take U7 from U7WB86M7W
+                            "else": "$user"
+                        }
+                    }
                 ]
             }
         }},

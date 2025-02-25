@@ -1,90 +1,66 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container py-5">
-    <div class="row justify-content-center">
-        <div class="col-lg-8 text-center">
-            <!-- Hero Section -->
-            <div class="mb-5">
-                <div class="display-4 mb-3">Welcome to Slack Parser</div>
-                <p class="lead text-muted mb-4">Search and analyze your Slack workspace with powerful AI assistance</p>
-                <div class="d-flex justify-content-center gap-3">
-                    <a href="/search" class="btn btn-lg btn-primary px-4">
-                        <i class="bi bi-search me-2"></i>Search Messages
-                    </a>
-                    <a href="/admin" class="btn btn-lg btn-outline-primary px-4">
-                        <i class="bi bi-upload me-2"></i>Upload Export
-                    </a>
-                </div>
-            </div>
+<div class="max-w-7xl mx-auto px-4 py-8">
+    <div class="text-center mb-12">
+        <h1 class="text-4xl font-bold text-gray-100 mb-4">Welcome to Slack Parser</h1>
+        <p class="text-xl text-gray-400">Search and analyze your Slack workspace with powerful AI assistance</p>
+    </div>
 
-            <!-- Features Section -->
-            <div class="row g-4 py-5">
-                <div class="col-md-4">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <i class="bi bi-search text-primary" style="font-size: 2rem;"></i>
-                            </div>
-                            <h5 class="card-title">Hybrid Search</h5>
-                            <p class="card-text text-muted">Combine keyword and AI search to find exactly what you need</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <i class="bi bi-filter text-primary" style="font-size: 2rem;"></i>
-                            </div>
-                            <h5 class="card-title">Smart Filters</h5>
-                            <p class="card-text text-muted">Filter by files, reactions, threads, and more</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card h-100 border-0 bg-light">
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <i class="bi bi-lightning text-primary" style="font-size: 2rem;"></i>
-                            </div>
-                            <h5 class="card-title">Fast Import</h5>
-                            <p class="card-text text-muted">Quickly import and process your Slack workspace exports</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    <div class="flex justify-center gap-4 mb-12">
+        <a href="/search" class="inline-flex items-center px-6 py-3 bg-[#1264a3] hover:bg-[#0b4d82] text-white rounded-md text-base font-medium transition-colors">
+            Search Messages
+        </a>
+        <a href="/admin" class="inline-flex items-center px-6 py-3 border border-[#1264a3] text-[#1264a3] hover:bg-[#1264a3] hover:text-white rounded-md text-base font-medium transition-colors">
+            Upload Export
+        </a>
+    </div>
 
-            <!-- Stats Section -->
-            {% if stats %}
-            <div class="row g-4 mt-4">
-                <div class="col-md-4">
-                    <div class="card border-0">
-                        <div class="card-body">
-                            <h3 class="mb-2">{{ stats.message_count }}</h3>
-                            <p class="text-muted mb-0">Messages Indexed</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card border-0">
-                        <div class="card-body">
-                            <h3 class="mb-2">{{ stats.channel_count }}</h3>
-                            <p class="text-muted mb-0">Channels</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card border-0">
-                        <div class="card-body">
-                            <h3 class="mb-2">{{ stats.user_count }}</h3>
-                            <p class="text-muted mb-0">Users</p>
-                        </div>
-                    </div>
-                </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+        <div class="bg-[#222529] rounded-md p-6 text-center">
+            <div class="flex justify-center mb-4">
+                <svg class="w-8 h-8 text-[#1264a3]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
             </div>
-            {% endif %}
+            <h3 class="text-base font-medium text-gray-100 mb-2">Hybrid Search</h3>
+            <p class="text-sm text-gray-400">Combine keyword and AI search to find exactly what you need</p>
+        </div>
+        <div class="bg-[#222529] rounded-md p-6 text-center">
+            <div class="flex justify-center mb-4">
+                <svg class="w-8 h-8 text-[#1264a3]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                </svg>
+            </div>
+            <h3 class="text-base font-medium text-gray-100 mb-2">Smart Filters</h3>
+            <p class="text-sm text-gray-400">Filter by files, reactions, threads, and more</p>
+        </div>
+        <div class="bg-[#222529] rounded-md p-6 text-center">
+            <div class="flex justify-center mb-4">
+                <svg class="w-8 h-8 text-[#1264a3]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+            </div>
+            <h3 class="text-base font-medium text-gray-100 mb-2">Fast Import</h3>
+            <p class="text-sm text-gray-400">Quickly import and process your Slack workspace exports</p>
         </div>
     </div>
+
+    {% if stats %}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-[#222529] rounded-md p-4 text-center">
+            <p class="text-sm text-gray-400 mb-1">Messages Indexed</p>
+            <h3 class="text-xl font-medium text-gray-100">{{ stats.message_count }}</h3>
+        </div>
+        <div class="bg-[#222529] rounded-md p-4 text-center">
+            <p class="text-sm text-gray-400 mb-1">Channels</p>
+            <h3 class="text-xl font-medium text-gray-100">{{ stats.channel_count }}</h3>
+        </div>
+        <div class="bg-[#222529] rounded-md p-4 text-center">
+            <p class="text-sm text-gray-400 mb-1">Users</p>
+            <h3 class="text-xl font-medium text-gray-100">{{ stats.user_count }}</h3>
+        </div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}

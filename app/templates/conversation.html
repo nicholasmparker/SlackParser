@@ -1,85 +1,98 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto px-4 py-6">
-    <div class="mb-8">
-        <h1 class="text-2xl font-bold text-gray-900 mb-4">
-            {{ conversation.display_name }}
-        </h1>
-        
-        <!-- Conversation search -->
-        <form method="get" class="flex gap-3 items-center">
+<div class="max-w-5xl mx-auto px-4 py-2">
+    <!-- Conversation header -->
+    <div class="flex items-center justify-between mb-4 pt-2">
+        <div class="flex items-center gap-2">
+            <h1 class="text-lg font-bold text-gray-100">{{ conversation.display_name }}</h1>
+        </div>
+    </div>
+
+    <!-- Search box -->
+    <div class="mb-4">
+        <form method="GET" class="relative">
             <input type="text" 
-                   name="q" 
-                   value="{{ q }}"
-                   placeholder="Search in this conversation..." 
-                   class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#611f69] focus:border-transparent">
-            <button type="submit" class="px-4 py-2 bg-[#611f69] text-white rounded-lg hover:bg-[#4a154b] transition-colors">
-                Search
-            </button>
-            {% if q %}
-            <a href="?page={{ page }}" class="text-[#611f69] hover:text-[#4a154b] transition-colors">
-                Clear
-            </a>
-            {% endif %}
+                name="q" 
+                value="{{ q or '' }}"
+                placeholder="Search in conversation..." 
+                class="w-full pl-3 pr-4 py-1.5 bg-[#222529] text-gray-100 rounded border border-gray-700 focus:outline-none focus:border-gray-500 text-sm">
         </form>
     </div>
 
+    <!-- Messages -->
     {% if messages %}
     <div class="space-y-0.5">
         {% for message in messages %}
-        <div id="{{ message.ts }}" class="hover:bg-gray-50 px-6 py-1.5">
-            <!-- User and timestamp header -->
-            <div class="flex items-baseline gap-2 mb-1">
-                <span class="font-bold text-gray-900">{{ message.user_name }}</span>
-                <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" class="text-xs text-gray-500">
-                    {{ message.ts|strftime("%Y-%m-%d %I:%M %p") }}
-                </time>
+        <div class="flex items-start gap-2 py-0.5 px-1 hover:bg-[#222529] rounded">
+            <!-- Avatar -->
+            <div class="w-7 h-7 rounded-sm bg-blue-600 flex-shrink-0 flex items-center justify-center text-white text-sm">
+                {{ message.user_name[0]|lower }}
             </div>
             
             <!-- Message content -->
-            <div class="text-gray-900 whitespace-pre-wrap">{{ message.text }}</div>
-            
-            {% if message.files %}
-            <div class="mt-2 flex flex-wrap gap-3">
-                {% for file in message.files %}
-                <a href="/files/{{ file.id }}" 
-                   class="inline-flex items-center text-[#1264a3] hover:text-[#0b4c8c] transition-colors">
-                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
-                              d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    {{ file.name }}
-                </a>
-                {% endfor %}
+            <div class="flex-1 min-w-0">
+                <div class="flex items-baseline gap-2">
+                    <span class="font-bold">{{ message.user_name }}</span>
+                    <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" 
+                          class="text-xs text-gray-400">
+                        {{ message.ts|strftime("%I:%M %p")|lower }}
+                    </time>
+                </div>
+                
+                <div class="text-gray-100 leading-snug">{{ message.text }}</div>
+                
+                {% if message.files %}
+                <div class="mt-1 space-y-1">
+                    {% for file in message.files %}
+                    <div class="border border-gray-700 rounded p-2 bg-[#222529]">
+                        <div class="text-sm">{{ file.name }}</div>
+                        {% if file.mimetype and file.mimetype.startswith('image/') %}
+                        <img src="/files/{{ file._id }}" alt="{{ file.name }}" class="mt-2 max-w-md rounded">
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                
+                {% if message.reactions %}
+                <div class="mt-1 flex flex-wrap gap-1">
+                    {% for reaction in message.reactions %}
+                    <div class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#222529] text-xs">
+                        <span>:{{ reaction.name }}:</span>
+                        <span class="text-gray-400">{{ reaction.count }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
-            {% endif %}
         </div>
         {% endfor %}
     </div>
-    
-    <!-- Pagination -->
+
     {% if total_pages > 1 %}
-    <div class="flex justify-center items-center gap-2 mt-6">
+    <div class="mt-4 flex justify-center gap-2 text-sm">
         {% if page > 1 %}
         <a href="?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}" 
-           class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+           class="px-2 py-1 bg-[#222529] rounded hover:bg-[#2C2F33]">
             Previous
         </a>
         {% endif %}
         
-        <span class="text-gray-600">Page {{ page }} of {{ total_pages }}</span>
+        <span class="px-2 py-1 text-gray-400">
+            Page {{ page }} of {{ total_pages }}
+        </span>
         
         {% if page < total_pages %}
         <a href="?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
-           class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+           class="px-2 py-1 bg-[#222529] rounded hover:bg-[#2C2F33]">
             Next
         </a>
         {% endif %}
     </div>
     {% endif %}
     {% else %}
-    <div class="text-center text-gray-500 py-8">
+    <div class="text-center text-gray-400 py-8">
         No messages found
     </div>
     {% endif %}

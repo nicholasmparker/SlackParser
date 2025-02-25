@@ -1,60 +1,65 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container py-4">
+<div class="max-w-5xl mx-auto px-4 py-4">
     <!-- Search Form -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <form method="get" class="row g-3 align-items-end">
-                <div class="col-md-6">
-                    <label class="form-label">Search Conversations</label>
-                    <input type="text" 
-                           class="form-control" 
-                           name="q" 
-                           value="{{ q }}" 
-                           placeholder="Search by name...">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Type</label>
-                    <select class="form-select" name="type">
-                        <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
-                        <option value="channel" {% if type == 'channel' %}selected{% endif %}>Channels</option>
-                        <option value="dm" {% if type == 'dm' %}selected{% endif %}>Direct Messages</option>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <button type="submit" class="btn btn-primary w-100">Search</button>
-                </div>
-            </form>
-        </div>
+    <div class="bg-[#222529] rounded-lg p-4 mb-6 border border-gray-700">
+        <form method="get" class="flex flex-wrap gap-4">
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-300 mb-1">Search Conversations</label>
+                <input type="text" 
+                       class="w-full bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-gray-500" 
+                       name="q" 
+                       value="{{ q }}" 
+                       placeholder="Search by name...">
+            </div>
+            <div class="w-48">
+                <label class="block text-sm font-medium text-gray-300 mb-1">Type</label>
+                <select class="w-full bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-gray-500"
+                        name="type">
+                    <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
+                    <option value="channel" {% if type == 'channel' %}selected{% endif %}>Channels</option>
+                    <option value="dm" {% if type == 'dm' %}selected{% endif %}>Direct Messages</option>
+                </select>
+            </div>
+            <div class="flex items-end">
+                <button type="submit" 
+                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white font-medium px-4 py-2 rounded transition-colors">
+                    Search
+                </button>
+            </div>
+        </form>
     </div>
 
     <!-- Conversations List -->
     {% if conversations %}
-    <div class="list-group mb-4">
+    <div class="space-y-2">
         {% for conversation in conversations %}
-        <div class="list-group-item">
-            <div class="d-flex w-100 justify-content-between align-items-start">
-                <div class="flex-grow-1">
-                    <div class="d-flex align-items-center mb-1">
-                        <h5 class="mb-0">
+        <div class="bg-[#222529] hover:bg-[#2C2F33] rounded-lg p-4 border border-gray-700 transition-colors">
+            <div class="flex justify-between items-start gap-4">
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                        <h3 class="text-gray-100 font-medium">
                             {{ conversation.display_name }}
-                        </h5>
-                        <span class="badge bg-secondary rounded-pill ms-2">
+                        </h3>
+                        <span class="bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full text-xs">
                             {{ conversation.message_count }} messages
                         </span>
                     </div>
                     {% if conversation.latest_message %}
-                    <div class="text-truncate text-muted small" style="max-width: 600px;">
-                        <strong>{{ conversation.latest_message.user }}:</strong>
+                    <div class="text-gray-400 text-sm truncate">
+                        <span class="font-medium">{{ conversation.latest_message.user }}:</span>
                         {{ conversation.latest_message.text }}
                     </div>
-                    <small class="text-muted">
+                    <div class="text-gray-500 text-xs mt-1">
                         {{ conversation.latest_message.ts|timedelta }}
-                    </small>
+                    </div>
                     {% endif %}
                 </div>
-                <a href="/conversation/{{ conversation._id }}" class="btn btn-outline-primary btn-sm ms-3">View</a>
+                <a href="/conversation/{{ conversation._id }}" 
+                   class="flex-shrink-0 bg-[#1A1D21] hover:bg-[#2C2F33] text-gray-100 px-3 py-1.5 rounded border border-gray-700 text-sm transition-colors">
+                    View
+                </a>
             </div>
         </div>
         {% endfor %}
@@ -62,32 +67,33 @@
 
     <!-- Pagination -->
     {% if total_pages > 1 %}
-    <nav aria-label="Page navigation">
-        <ul class="pagination justify-content-center">
-            {% if page > 1 %}
-            <li class="page-item">
-                <a class="page-link" href="?page={{ page - 1 }}&q={{ q }}&type={{ type }}">Previous</a>
-            </li>
-            {% endif %}
-            
-            {% for p in range(1, total_pages + 1) %}
-            <li class="page-item {% if p == page %}active{% endif %}">
-                <a class="page-link" href="?page={{ p }}&q={{ q }}&type={{ type }}">{{ p }}</a>
-            </li>
-            {% endfor %}
-            
-            {% if page < total_pages %}
-            <li class="page-item">
-                <a class="page-link" href="?page={{ page + 1 }}&q={{ q }}&type={{ type }}">Next</a>
-            </li>
-            {% endif %}
-        </ul>
-    </nav>
+    <div class="flex justify-center gap-2 mt-6">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}&q={{ q }}&type={{ type }}"
+           class="bg-[#222529] hover:bg-[#2C2F33] text-gray-300 px-3 py-1.5 rounded border border-gray-700 text-sm">
+            Previous
+        </a>
+        {% endif %}
+        
+        {% for p in range(1, total_pages + 1) %}
+        <a href="?page={{ p }}&q={{ q }}&type={{ type }}"
+           class="{% if p == page %}bg-[#1264a3] text-white{% else %}bg-[#222529] hover:bg-[#2C2F33] text-gray-300{% endif %} px-3 py-1.5 rounded border {% if p == page %}border-[#1264a3]{% else %}border-gray-700{% endif %} text-sm">
+            {{ p }}
+        </a>
+        {% endfor %}
+        
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}&q={{ q }}&type={{ type }}"
+           class="bg-[#222529] hover:bg-[#2C2F33] text-gray-300 px-3 py-1.5 rounded border border-gray-700 text-sm">
+            Next
+        </a>
+        {% endif %}
+    </div>
     {% endif %}
     {% else %}
-    <div class="text-center py-5">
-        <h5>No conversations found</h5>
-        <p class="text-muted">Try adjusting your search criteria</p>
+    <div class="text-center py-12">
+        <h3 class="text-gray-300 text-lg font-medium mb-2">No conversations found</h3>
+        <p class="text-gray-400">Try adjusting your search criteria</p>
     </div>
     {% endif %}
 </div>
