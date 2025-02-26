@@ -7,8 +7,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import logging
 
 from app.db.models import Channel, Message, Reaction
+from app.slack_parser import SlackMessageParser
 
 class ParserError(Exception):
     """Custom exception for parsing errors"""
@@ -18,14 +20,15 @@ class ParserError(Exception):
         super().__init__(f"Line {line_number}: {message}")
 
 def parse_timestamp(timestamp_str: str) -> datetime:
-    """Parse timestamp in format YYYY-MM-DD HH:MM:SS UTC"""
+    """Parse timestamp using SlackMessageParser"""
     try:
-        return datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S UTC")
+        return SlackMessageParser.parse_timestamp(timestamp_str.replace(" UTC", ""))
     except ValueError as e:
-        raise ParserError(f"Invalid timestamp format: {timestamp_str}", 0)
+        raise ParserError(str(e), 0)
 
 def parse_channel_metadata(lines: List[str]) -> Channel:
-    """Parse channel metadata from header lines.
+    """Parse channel metadata from lines.
+
     Format:
     Channel Name: #{channel-name}
     Channel ID: {C...}
@@ -34,151 +37,127 @@ def parse_channel_metadata(lines: List[str]) -> Channel:
     Topic: "{topic text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
     Purpose: "{purpose text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
     """
-    metadata = {}
-    for i, line in enumerate(lines):
-        try:
-            if line.startswith("Channel Name: #"):
-                metadata["name"] = line.split("#", 1)[1].strip()
-            elif line.startswith("Channel ID: "):
-                metadata["id"] = line.split(": ", 1)[1].strip()
-            elif line.startswith("Created: "):
-                # Format: Created: 2023-01-01 12:00:00 UTC by username
-                created_parts = line.split(": ", 1)[1].split(" by ")
-                metadata["created"] = parse_timestamp(created_parts[0])
-                metadata["creator_username"] = created_parts[1].strip()
-            elif line.startswith("Topic: "):
-                # Format: Topic: "text", set on YYYY-MM-DD HH:MM:SS UTC by username
-                topic_parts = line.split('"', 2)
-                if len(topic_parts) >= 2:
-                    metadata["topic"] = topic_parts[1].strip()
-                    set_info = topic_parts[2].strip(", ").split(" by ")
-                    if len(set_info) == 2:
-                        metadata["topic_set_at"] = parse_timestamp(set_info[0].split("set on ")[1])
-                        metadata["topic_set_by"] = set_info[1].strip()
-            elif line.startswith("Purpose: "):
-                # Format: Purpose: "text", set on YYYY-MM-DD HH:MM:SS UTC by username
-                purpose_parts = line.split('"', 2)
-                if len(purpose_parts) >= 2:
-                    metadata["purpose"] = purpose_parts[1].strip()
-                    set_info = purpose_parts[2].strip(", ").split(" by ")
-                    if len(set_info) == 2:
-                        metadata["purpose_set_at"] = parse_timestamp(set_info[0].split("set on ")[1])
-                        metadata["purpose_set_by"] = set_info[1].strip()
-        except Exception as e:
-            raise ParserError(f"Error parsing channel metadata: {str(e)}", i)
-
-    return Channel(
-        id=metadata["id"],
-        name=metadata["name"],
-        created=metadata["created"],
-        creator_username=metadata.get("creator_username"),
-        topic=metadata.get("topic"),
-        topic_set_by=metadata.get("topic_set_by"),
-        topic_set_at=metadata.get("topic_set_at"),
-        purpose=metadata.get("purpose"),
-        purpose_set_by=metadata.get("purpose_set_by"),
-        purpose_set_at=metadata.get("purpose_set_at"),
-        is_dm=False
-    )
-
-def parse_dm_metadata(lines: List[str]) -> Channel:
-    """Parse DM metadata from header lines.
-    Format:
-    Private conversation between {user1}, {user2}
-    Channel ID: {D...}
-    Created: {YYYY-MM-DD HH:MM:SS} UTC
-    Type: Direct Message
-    """
-    metadata = {}
-    for i, line in enumerate(lines):
-        try:
-            if line.startswith("Private conversation between "):
-                users = line.split("between ", 1)[1].split(", ")
-                metadata["users"] = [u.strip() for u in users]
-            elif line.startswith("Channel ID: "):
-                metadata["id"] = line.split(": ", 1)[1].strip()
-            elif line.startswith("Created: "):
-                metadata["created"] = parse_timestamp(line.split(": ", 1)[1].strip())
-        except Exception as e:
-            raise ParserError(f"Error parsing DM metadata: {str(e)}", i)
-
-    return Channel(
-        id=metadata["id"],
-        name=f"DM: {'-'.join(metadata['users'])}",
-        created=metadata["created"],
-        is_dm=True,
-        dm_users=metadata["users"]
-    )
-
-def parse_message(line: str, line_number: int) -> Optional[Message]:
-    """Parse a message line into a Message object.
-    Handles all message types from ARCHITECTURE.md:
-    1. Regular message: [{timestamp} UTC] <{username}> {text}
-    2. Join message: [{timestamp} UTC] {username} joined the channel
-    3. Archive message: [{timestamp} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}
-    4. File share message: [{timestamp} UTC] <{username}> shared a file: {file_name}
-    5. System message: [{timestamp} UTC] {system message text}
-    """
     try:
-        # All messages start with timestamp in brackets
-        if not (line.startswith("[") and "]" in line):
-            return None
+        # Extract channel name
+        channel_name = lines[0].split(": #")[1].strip()
 
-        # Split timestamp from content
-        ts_end = line.index("]")
-        timestamp_str = line[1:ts_end].strip()
-        content = line[ts_end + 1:].strip()
-        
-        # Base message fields
-        message = {
-            "ts": parse_timestamp(timestamp_str),
-            "reactions": []
-        }
+        # Extract channel ID
+        channel_id = lines[1].split(": ")[1].strip()
 
-        # Regular message
-        if content.startswith("<") and ">" in content:
-            username_end = content.index(">")
-            message["username"] = content[1:username_end].strip()
-            message["text"] = content[username_end + 1:].strip()
-            message["type"] = "message"
-            
-            # Check for edited flag
-            if message["text"].endswith(" (edited)"):
-                message["text"] = message["text"][:-9]
-                message["is_edited"] = True
+        # Extract created timestamp and creator
+        created_line = lines[2].split(": ")[1]
+        created_ts = parse_timestamp(created_line.split(" UTC by ")[0])
+        creator = created_line.split(" UTC by ")[1].strip()
 
-            # Check if it's a file share
-            if "shared a file:" in message["text"]:
-                message["type"] = "file"
-                file_parts = message["text"].split("shared a file:", 1)
-                message["text"] = file_parts[1].strip()
-                message["file_id"] = message["text"]  # Use text as file ID for now
+        # Extract type
+        channel_type = lines[3].split(": ")[1].strip()
 
-        # Archive message
-        elif "(channel_archive)" in content:
-            try:
-                archive_start = content.index("{")
-                archive_data = json.loads(content[archive_start:])
-                message["type"] = "archive"
-                message["text"] = archive_data.get("text", "")
-                username_start = content.index("<") + 1
-                username_end = content.index(">")
-                message["username"] = content[username_start:username_end].strip()
-                message["system_action"] = "archive"
-            except:
-                return None
+        # Find topic and purpose lines
+        topic_line = None
+        purpose_line = None
+        for i, line in enumerate(lines[4:]):
+            if line.startswith("Topic: "):
+                topic_line = i + 4
+            elif line.startswith("Purpose: "):
+                purpose_line = i + 4
+                break
 
-        # System/Join message
-        else:
-            space_idx = content.find(" ")
-            if space_idx == -1:
-                return None
-            message["username"] = content[:space_idx].strip()
-            message["text"] = content[space_idx + 1:].strip()
-            message["type"] = "system"
-            message["system_action"] = message["text"].split()[0]
+        # Extract topic if present
+        topic = ""
+        topic_ts = None
+        topic_user = None
+        if topic_line is not None:
+            # Topic may be multi-line, so combine lines until we hit Purpose or end
+            topic_text = []
+            for line in lines[topic_line:purpose_line or len(lines)]:
+                if line.startswith("Purpose: "):
+                    break
+                topic_text.append(line)
+            topic_full = " ".join(topic_text)
 
-        return Message(**message)
+            # Extract the metadata
+            if '", set on ' in topic_full:
+                topic = topic_full.split('Topic: "')[1].split('", set on ')[0]
+                topic_meta = topic_full.split('", set on ')[1]
+                topic_ts = parse_timestamp(topic_meta.split(" UTC by ")[0])
+                topic_user = topic_meta.split(" UTC by ")[1].strip()
+            else:
+                topic = topic_full.split('Topic: ')[1]
+
+        # Extract purpose if present
+        purpose = ""
+        purpose_ts = None
+        purpose_user = None
+        if purpose_line is not None:
+            # Purpose may be multi-line, so combine remaining lines
+            purpose_text = []
+            for line in lines[purpose_line:]:
+                purpose_text.append(line)
+            purpose_full = " ".join(purpose_text)
+
+            # Extract the metadata
+            if '", set on ' in purpose_full:
+                purpose = purpose_full.split('Purpose: "')[1].split('", set on ')[0]
+                purpose_meta = purpose_full.split('", set on ')[1]
+                purpose_ts = parse_timestamp(purpose_meta.split(" UTC by ")[0])
+                purpose_user = purpose_meta.split(" UTC by ")[1].strip()
+            else:
+                purpose = purpose_full.split('Purpose: ')[1]
+
+        return Channel(
+            id=channel_id,
+            name=channel_name,
+            type=channel_type,
+            created=created_ts,
+            creator_username=creator,
+            topic=topic,
+            topic_set_by=topic_user,
+            topic_set_at=topic_ts,
+            purpose=purpose,
+            purpose_set_by=purpose_user,
+            purpose_set_at=purpose_ts
+        )
 
     except Exception as e:
-        raise ParserError(f"Error parsing message: {str(e)}", line_number)
+        raise ParserError(f"Error parsing channel metadata: {str(e)}")
+
+def parse_dm_metadata(lines: List[str]) -> Channel:
+    """Parse DM metadata using SlackMessageParser"""
+    try:
+        # Handle both regular DMs and multi-party DMs
+        if lines[0].startswith("Private conversation between"):
+            metadata = SlackMessageParser.parse_dm_metadata(lines)
+            # Handle multi-party DMs that have channel IDs starting with C
+            if metadata["id"].startswith("C"):
+                metadata["type"] = "Multi-Party Direct Message"
+            return Channel(**metadata)
+        else:
+            raise ParserError("Invalid DM format", 0)
+    except ValueError as e:
+        raise ParserError(str(e), 0)
+
+def parse_message(line: str, line_number: int) -> Optional[Message]:
+    """Parse a message line using SlackMessageParser.
+    Returns None for date headers or empty lines.
+    """
+    if not line or line.startswith("----") or line == "Messages:":
+        return None
+
+    try:
+        parsed = SlackMessageParser.parse_message_line(line)
+        if not parsed:
+            return None
+        return Message(
+            ts=parsed["ts"],
+            username=parsed["username"],
+            text=parsed["text"],
+            type=parsed["type"],
+            is_edited=parsed.get("is_edited", False),
+            is_bot=parsed.get("is_bot", False),
+            system_action=parsed.get("system_action"),
+            file_id=parsed.get("file_id"),
+            data=parsed.get("data"),
+            reactions=parsed.get("reactions", [])
+        )
+    except ValueError as e:
+        raise ParserError(str(e), line_number)
