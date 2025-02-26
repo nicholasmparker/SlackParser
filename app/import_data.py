@@ -14,8 +14,14 @@ from bson import ObjectId
 import zipfile
 import logging
 from app.slack_parser import parse_slack_message
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+class ImportStatus(Enum):
+    ERROR = "ERROR"
+    IMPORTING = "IMPORTING"
+    COMPLETED = "COMPLETED"
 
 # Constants
 DATA_DIR = os.getenv("DATA_DIR", "data")
@@ -46,108 +52,107 @@ async def wait_for_mongodb():
             print(f"Waiting {retry_delay} seconds before next attempt...")
             await asyncio.sleep(retry_delay)
 
-async def parse_message(line):
-    """Parse a message line from the new Slack export format
-    
-    Format: [TIMESTAMP UTC] <USER> MESSAGE
-    Example: [2023-07-06 22:51:43 UTC] <diane> Message text
-    """
+async def parse_message(line: str, channel_id: str) -> Optional[dict]:
+    """Parse a message line into a message document"""
     try:
-        # Skip empty lines and date headers
-        if not line or line.startswith('----'):
+        # All messages start with timestamp in brackets
+        if not (line.startswith("[") and "]" in line):
             return None
             
-        # Extract timestamp
-        timestamp_match = re.match(r'\[(.*?) UTC\]', line)
-        if not timestamp_match:
-            return None
-        timestamp_str = timestamp_match.group(1)
-        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-        ts = timestamp.timestamp()
+        # Split timestamp from rest
+        ts_end = line.index("]")
+        timestamp_str = line[1:ts_end].strip()
+        content = line[ts_end + 1:].strip()
         
-        # Get remaining text after timestamp
-        remaining = line[line.index(']')+1:].strip()
+        # Parse timestamp
+        ts = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S UTC")
         
-        # Handle file shares
-        file_share_match = re.match(r'(.+?) shared file\(s\) ([A-Z0-9]+)(?: with text:)?\s*(.*)', remaining)
-        if file_share_match:
-            user = file_share_match.group(1)
-            file_id = file_share_match.group(2)
-            text = file_share_match.group(3) or ''
-            return {
-                'ts': str(ts),
-                'timestamp': timestamp,
-                'user': user,
-                'text': text,
-                'type': 'file_share',
-                'file_id': file_id
-            }
-            
-        # Handle channel actions
-        action_match = re.match(r'\((.+?)\) <(.+?)> (.*)', remaining)
-        if action_match:
-            action = action_match.group(1)
-            user = action_match.group(2)
-            data = action_match.group(3)
-            return {
-                'ts': str(ts),
-                'timestamp': timestamp,
-                'user': user,
-                'text': data,
-                'type': action
-            }
+        message = {
+            "channel_id": channel_id,
+            "ts": ts,
+            "is_edited": False,
+            "reactions": []
+        }
         
-        # Handle bot messages
-        bot_match = re.match(r'\[<(.+?)> bot\] (.*)', remaining)
-        if bot_match:
-            bot_name = bot_match.group(1)
-            text = bot_match.group(2)
-            return {
-                'ts': str(ts),
-                'timestamp': timestamp,
-                'user': f"{bot_name} Bot",
-                'text': text,
-                'type': 'message',
-                'is_bot': True
-            }
+        # Check message type
+        if content.startswith("<") and ">" in content:
+            # Regular message
+            username_end = content.index(">")
+            message["username"] = content[1:username_end].strip()
+            message["text"] = content[username_end + 1:].strip()
+            message["type"] = "message"
             
-        # Handle channel join messages
-        join_match = re.match(r'([\w.-]+) joined the channel', remaining)
-        if join_match:
-            username = join_match.group(1)
-            return {
-                'ts': str(ts),
-                'timestamp': timestamp,
-                'user': username,
-                'text': 'joined the channel',
-                'type': 'channel_join'
-            }
+            # Check for edited flag
+            if message["text"].endswith(" (edited)"):
+                message["text"] = message["text"][:-9]  # Remove (edited)
+                message["is_edited"] = True
+                
+        elif "shared file(s)" in content:
+            # File share message
+            # Format: username shared file(s) FILE_ID with text:
+            message["type"] = "file"
+            parts = content.split(" shared file(s) ")
+            message["username"] = parts[0].strip()
+            file_parts = parts[1].split(" with text:")
+            message["file_id"] = file_parts[0].strip()
+            message["text"] = file_parts[1].strip() if len(file_parts) > 1 else ""
             
-        # Handle standard messages - now with support for dots in usernames and mentions
-        user_match = re.match(r'<([\w.-]+)> (.*)', remaining)
-        if user_match:
-            user = user_match.group(1)
-            text = user_match.group(2)
+        elif "(channel_archive)" in content:
+            # Archive message
+            try:
+                # Parse archive JSON
+                archive_start = content.index("{")
+                archive_data = json.loads(content[archive_start:])
+                message["type"] = "archive"
+                message["text"] = archive_data.get("text", "")
+                # Extract username from content
+                username_start = content.index("<") + 1
+                username_end = content.index(">")
+                message["username"] = content[username_start:username_end].strip()
+            except:
+                return None
+                
+        else:
+            # System message
+            space_idx = content.find(" ")
+            if space_idx == -1:
+                return None
+            message["username"] = content[:space_idx].strip()
+            message["text"] = content[space_idx + 1:].strip()
+            message["type"] = "system"
+            message["system_action"] = message["text"].split()[0]  # First word is action
             
-            # Clean up Slack mentions
-            text = re.sub(r'<!subteam\^[A-Z0-9]+\|@[\w-]+>', lambda m: m.group(0).split('|')[1], text)  # Convert <!subteam^ABC123|@group> to @group
-            text = re.sub(r'<mailto:([^|>]+)\|[^>]+>', r'\1', text)  # Convert <mailto:email@example.com|email@example.com> to email@example.com
-            
-            return {
-                'ts': str(ts),
-                'timestamp': timestamp,
-                'user': user,
-                'text': text,
-                'type': 'message'
-            }
-            
-        print(f"Could not parse message line: {line}")
-        return None
-            
+        return message
+        
     except Exception as e:
-        print(f"Error parsing message line: {str(e)}")
-        print(f"Line: {line}")
+        print(f"Error parsing message: {str(e)}")
         return None
+
+async def parse_dm_metadata(dm_file: Path) -> dict:
+    """Parse DM metadata from the header of a DM export file"""
+    metadata = {}
+    try:
+        with open(dm_file) as f:
+            # Read until we hit the message separator
+            for line in f:
+                if line.strip():
+                    if line.startswith('Private conversation between'):
+                        # Format: Private conversation between user1, user2
+                        users = line.replace("Private conversation between", "").strip().split(", ")
+                        metadata["dm_users"] = users
+                        metadata["name"] = f"DM: {'-'.join(users)}"
+                        metadata["is_dm"] = True
+                    elif line.startswith("Channel ID:"):
+                        metadata["id"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Created:"):
+                        # Format: YYYY-MM-DD HH:MM:SS UTC
+                        created_str = line.split(":", 1)[1].strip()
+                        metadata["created"] = datetime.strptime(created_str.split(" UTC")[0], "%Y-%m-%d %H:%M:%S")
+                    
+    except Exception as e:
+        raise Exception(f"Error parsing DM metadata: {str(e)}")
+        
+    return metadata
 
 async def parse_channel_metadata(lines):
     """Parse channel metadata from the header lines"""
@@ -201,7 +206,7 @@ async def parse_conversation_file(file_path, conversation_type='channel'):
             if line.strip():
                 if line.startswith('['):
                     # This is a message
-                    message = await parse_message(line)
+                    message = await parse_message(line, file_path.parent.name)
                     if message:
                         message['conversation_type'] = conversation_type
                         yield message
@@ -253,6 +258,17 @@ async def import_slack_data():
                 print(f"Processing channel: {channel_dir}")
                 channel_file = os.path.join(channel_path, f"{channel_dir}.txt")
                 await process_channel(db, channel_file, channel_dir)
+    
+    # Process DMs
+    print("\nProcessing DMs...")
+    dms_dir = os.path.join(DATA_DIR, "dms")
+    if os.path.exists(dms_dir):
+        for dm in os.listdir(dms_dir):
+            dm_path = os.path.join(dms_dir, dm)
+            if os.path.isdir(dm_path):
+                print(f"Processing DM: {dm}")
+                dm_file = os.path.join(dm_path, f"{dm}.txt")
+                await process_dm(db, dm_file, dm)
     
     # Create .import_complete file to indicate successful import
     with open("/data/.import_complete", "w") as f:
@@ -464,7 +480,7 @@ async def process_channel(db: Any, channel_path: Path, channel_dir: str):
                     continue
                 
                 # Parse message
-                message = await parse_message(line)
+                message = await parse_message(line, channel_dir)
                 if message:
                     message['conversation_id'] = channel_name
                     message['conversation_type'] = 'channel'
@@ -528,7 +544,7 @@ async def process_dm(db: Any, dm_path: Path, dm_dir: str):
                 if line.startswith('---'):
                     continue
                     
-                message = await parse_message(line)
+                message = await parse_message(line, dm_dir)
                 if message:
                     message['conversation_id'] = dm_dir
                     message['conversation_type'] = 'dm'
@@ -553,108 +569,142 @@ async def update_chroma_embeddings(db):
     if new_messages_for_embedding:
         await embedding_service.add_messages(new_messages_for_embedding)
 
-async def import_slack_export(db: Any, file_path: Path, upload_id: str):
-    """Import a Slack export ZIP file
+async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id: str, cleanup: bool = True) -> tuple[int, list[str]]:
+    """Import data from a Slack export file"""
+    errors = []
+    extract_dir = Path(DATA_DIR) / "extracts" / upload_id
     
-    Args:
-        db: MongoDB database connection
-        file_path: Path to the ZIP file
-        upload_id: ID of the upload record
-    """
     try:
-        # Set up extract directory
-        extract_dir = Path('/data/extracted') / upload_id
-        
-        # Check if files are already extracted
-        slack_export_dir = None
-        if extract_dir.exists():
-            # Look for existing slack-export directory
-            for item in extract_dir.iterdir():
-                if item.is_dir() and ('slack-export' in item.name):
-                    slack_export_dir = item
-                    print(f"Using existing extracted files in {slack_export_dir}")
-                    break
-        
-        # Only extract if needed
-        if not slack_export_dir:
-            print(f"No extracted files found, extracting ZIP file to {extract_dir}")
-            await extract_with_progress(db, str(file_path), extract_dir, upload_id)
-            
-            # Find the slack-export directory after extraction
-            for item in extract_dir.iterdir():
-                if item.is_dir() and ('slack-export' in item.name):
-                    slack_export_dir = item
-                    break
-                    
-        if not slack_export_dir:
-            raise Exception("Could not find slack-export directory in ZIP file")
-            
-        # Process channels
-        channels_dir = slack_export_dir / 'channels'
-        if channels_dir.exists():
-            # Update status
+        # Get list of subdirectories
+        subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        if not subdirs:
+            error_msg = "No subdirectories found in extract"
             await db.uploads.update_one(
                 {"_id": ObjectId(upload_id)},
-                {"$set": {"status": "IMPORTING", "progress": "Processing channels..."}}
+                {"$set": {
+                    "status": ImportStatus.ERROR.value,
+                    "error": error_msg,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            return 0, [error_msg]
+        
+        slack_dir = subdirs[0]
+        channels_dir = slack_dir / 'channels'
+        dms_dir = slack_dir / 'dms'
+        
+        if not channels_dir.exists() and not dms_dir.exists():
+            error_msg = "No channels or DMs directory found in export"
+            await db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {"$set": {
+                    "status": ImportStatus.ERROR.value,
+                    "error": error_msg,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            return 0, [error_msg]
+        
+        # Update status to importing
+        await db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": ImportStatus.IMPORTING.value,
+                "progress": "Starting import...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        # Get list of channel and DM directories
+        channel_dirs = [d for d in channels_dir.iterdir() if d.is_dir()] if channels_dir.exists() else []
+        dm_dirs = [d for d in dms_dir.iterdir() if d.is_dir()] if dms_dir.exists() else []
+        total_dirs = len(channel_dirs) + len(dm_dirs)
+        print(f"Found {len(channel_dirs)} channels and {len(dm_dirs)} DMs to import")
+        
+        # Import channels and DMs
+        total_messages = 0
+        processed = 0
+        
+        # Import channels
+        for channel_dir in channel_dirs:
+            messages_imported, new_errors = await import_channel_or_dm(db, channel_dir, errors, upload_id)
+            total_messages += messages_imported
+            errors.extend(new_errors)
+            processed += 1
+            
+            # Update progress
+            progress_percent = int(processed / total_dirs * 100)
+            await db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {"$set": {
+                    "progress": f"Imported {processed}/{total_dirs} channels/DMs ({total_messages} messages)",
+                    "progress_percent": progress_percent,
+                    "updated_at": datetime.utcnow()
+                }}
             )
             
-            # Process each channel
-            total_messages = 0
-            for channel_dir in channels_dir.iterdir():
-                if channel_dir.is_dir():
-                    messages = await process_channel(db, channel_dir, channel_dir.name)
-                    total_messages += messages
-                    
-                    # Update progress
-                    await db.uploads.update_one(
-                        {"_id": ObjectId(upload_id)},
-                        {"$set": {"progress": f"Imported {total_messages} messages..."}}
-                    )
-        else:
-            print("No channels directory found")
-            total_messages = 0
-        
-        # Process DMs
-        print("\nProcessing DMs...")
-        dms_dir = slack_export_dir / 'dms'
-        print(f"Looking for DMs directory at {dms_dir}")
-        if dms_dir.exists():
-            print(f"Found DMs directory at {dms_dir}")
-            for dm_dir in dms_dir.iterdir():
-                if dm_dir.is_dir():
-                    print(f"Found DM directory: {dm_dir}")
-                    dm_count = await process_dm(db, dm_dir, dm_dir.name)
-                    total_messages += dm_count
-                    print(f"Processed {dm_count} messages from DM {dm_dir.name}")
-        else:
-            print("No DMs directory found")
-        
-        # Mark as complete
+        # Import DMs
+        for dm_dir in dm_dirs:
+            messages_imported, new_errors = await import_channel_or_dm(db, dm_dir, errors, upload_id)
+            total_messages += messages_imported
+            errors.extend(new_errors)
+            processed += 1
+            
+            # Update progress
+            progress_percent = int(processed / total_dirs * 100)
+            await db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {"$set": {
+                    "progress": f"Imported {processed}/{total_dirs} channels/DMs ({total_messages} messages)",
+                    "progress_percent": progress_percent,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            
+        # Check for any errors
+        if errors:
+            # Don't cleanup files if there were errors
+            await db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {"$set": {
+                    "status": ImportStatus.ERROR.value,
+                    "error": "\n".join(errors),
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            return total_messages, errors
+            
+        # Update final status
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
-            {
-                "$set": {
-                    "status": "complete",
-                    "progress": f"Imported {total_messages} messages"
-                }
-            }
+            {"$set": {
+                "status": ImportStatus.COMPLETED.value,
+                "progress": f"Import complete - {len(channel_dirs)} channels, {len(dm_dirs)} DMs, {total_messages} messages",
+                "progress_percent": 100,
+                "updated_at": datetime.utcnow()
+            }}
         )
+        
+        # Only cleanup files if import was successful
+        if cleanup and extract_dir.exists():
+            shutil.rmtree(extract_dir)
+            
+        return total_messages, errors
         
     except Exception as e:
-        print(f"Error importing Slack export: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        error_msg = f"Error during import: {str(e)}"
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
-            {
-                "$set": {
-                    "status": "error",
-                    "error": str(e)
-                }
-            }
+            {"$set": {
+                "status": ImportStatus.ERROR.value,
+                "error": error_msg,
+                "updated_at": datetime.utcnow()
+            }}
         )
+        return 0, [error_msg]
 
-def get_zip_total_size(zip_path: str) -> int:
+async def get_zip_total_size(zip_path: str) -> int:
     """Get the total uncompressed size of all files in the ZIP"""
     total = 0
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -696,7 +746,7 @@ async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, uploa
                     await db.uploads.update_one(
                         {"_id": ObjectId(upload_id)},
                         {"$set": {
-                            "status": "extracting",  
+                            "status": "EXTRACTING",  
                             "progress": f"Extracted {extracted_size:,} of {total_size:,} bytes ({progress_percent}%)",
                             "progress_percent": progress_percent,
                             "updated_at": datetime.utcnow()
@@ -708,7 +758,7 @@ async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, uploa
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
-                "status": "extracting",  
+                "status": "EXTRACTING",  
                 "progress": f"Extracted {extracted_size:,} of {total_size:,} bytes (100%)",
                 "progress_percent": 100,
                 "updated_at": datetime.utcnow()
@@ -902,6 +952,17 @@ async def main():
                 
                 total_imported += imported
                 logger.info(f"Imported {imported} messages from {channel_dir}")
+        
+        # Import DMs
+        print("\nProcessing DMs...")
+        dms_dir = os.path.join(DATA_DIR, "dms")
+        if os.path.exists(dms_dir):
+            for dm in os.listdir(dms_dir):
+                dm_path = os.path.join(dms_dir, dm)
+                if os.path.isdir(dm_path):
+                    print(f"Processing DM: {dm}")
+                    dm_file = os.path.join(dm_path, f"{dm}.txt")
+                    await process_dm(db, dm_file, dm)
         
         # Update final status
         await db.import_status.update_one(

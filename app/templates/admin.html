@@ -73,42 +73,21 @@
                     <tr data-upload-id="{{ upload._id }}" class="hover:bg-[#2C2F33] transition-colors">
                         <td class="py-3 text-gray-100">{{ upload.filename }}</td>
                         <td class="py-3">
-                            {% if upload.status == "IMPORTING" %}
+                            {% if upload.status == "EXTRACTING" %}
                                 <div class="space-y-2">
-                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Importing</span>
-                                    <button onclick="cancelImport('{{ upload._id }}')"
-                                            class="bg-red-900/50 hover:bg-red-800/50 text-red-100 px-2 py-1 rounded-full text-xs transition-colors">
-                                        Cancel Import
-                                    </button>
-                                </div>
-                            {% elif upload.status == "cancelled" %}
-                                <div class="space-y-2">
-                                    <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Cancelled</span>
-                                    <button onclick="restartImport('{{ upload._id }}')"
-                                            class="bg-green-900/50 hover:bg-green-800/50 text-green-100 px-2 py-1 rounded-full text-xs transition-colors">
-                                        Restart Import
-                                    </button>
-                                </div>
-                            {% elif upload.status == "complete" %}
-                                <div class="space-y-2">
-                                    <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Import Complete</span>
-                                    {% if upload.training_status %}
-                                        {% if upload.training_status == "running" %}
-                                            <div>
-                                                <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs mb-2">Training</span>
-                                                <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
-                                                    <div class="bg-[#1264a3] h-full transition-all duration-200"
-                                                         style="width: {{ upload.training_progress or 0 }}%"></div>
-                                                </div>
-                                            </div>
-                                        {% elif upload.training_status == "complete" %}
-                                            <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Training Complete</span>
-                                        {% endif %}
+                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                                    {% if upload.progress_percent is not none %}
+                                        <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
+                                            <div class="bg-[#1264a3] h-full transition-all duration-200"
+                                                 style="width: {{ upload.progress_percent }}%"></div>
+                                        </div>
                                     {% endif %}
                                 </div>
-                            {% elif upload.status == "UPLOADED" %}
-                                <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Ready to Import</span>
-                            {% elif upload.status == "importing" %}
+                            {% elif upload.status == "EXTRACTED" %}
+                                <div class="space-y-2">
+                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracted</span>
+                                </div>
+                            {% elif upload.status == "IMPORTING" %}
                                 <div class="space-y-2">
                                     <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Importing</span>
                                     {% if upload.progress_percent is not none %}
@@ -118,13 +97,32 @@
                                         </div>
                                     {% endif %}
                                 </div>
-                            {% elif upload.status == "error" %}
+                            {% elif upload.status == "EMBEDDING" %}
+                                <div class="space-y-2">
+                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Creating Embeddings</span>
+                                    {% if upload.progress_percent is not none %}
+                                        <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
+                                            <div class="bg-[#1264a3] h-full transition-all duration-200"
+                                                 style="width: {{ upload.progress_percent }}%"></div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            {% elif upload.status == "COMPLETED" %}
+                                <div class="space-y-2">
+                                    <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Import Complete</span>
+                                </div>
+                            {% elif upload.status == "ERROR" %}
                                 <div class="space-y-2">
                                     <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Error</span>
                                     {% if upload.error %}
                                         <div class="text-red-400 text-xs mt-1">{{ upload.error }}</div>
                                     {% endif %}
+                                    <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('{{ upload._id }}')">
+                                        Restart Import
+                                    </button>
                                 </div>
+                            {% elif upload.status == "UPLOADED" %}
+                                <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Ready to Import</span>
                             {% else %}
                                 <span class="bg-gray-800 text-gray-300 px-2 py-1 rounded-full text-xs">{{ upload.status }}</span>
                             {% endif %}
@@ -139,14 +137,14 @@
                                         Start Import
                                     </button>
                                 </form>
-                            {% elif upload.status == "importing" %}
+                            {% elif upload.status == "IMPORTING" %}
                                 <form method="post" action="/admin/import/{{ upload._id }}/cancel" class="inline">
                                     <button type="submit"
                                             class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors">
                                         Cancel
                                     </button>
                                 </form>
-                            {% elif upload.status == "complete" and not upload.training_status %}
+                            {% elif upload.status == "COMPLETED" %}
                                 <form method="post" action="/admin/import/{{ upload._id }}/train" class="inline">
                                     <button type="submit"
                                             class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
@@ -202,51 +200,94 @@
 
 {% block scripts %}
 <script>
-function cancelImport(uploadId) {
-    if (!confirm('Are you sure you want to cancel this import?')) {
+/*
+ * CRITICAL: DO NOT MODIFY THIS WORKING UPLOAD HANDLER
+ * This code handles file uploads with progress tracking using XMLHttpRequest
+ * It was working as of Feb 25, 2025 and should not be "improved" or "cleaned up"
+ *
+ * Key components:
+ * 1. Form submission handler
+ * 2. Progress tracking via xhr.upload.onprogress
+ * 3. Status updates and error handling
+ * 4. UI feedback (progress bar, button state, etc)
+ */
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    // Get the file from the input
+    // CRITICAL: This must stay as getElementById, do not "improve" to querySelector
+    const fileInput = document.getElementById('file');
+    const file = fileInput.files[0];
+    if (!file) {
+        alert('Please select a file first');
         return;
     }
-    
-    fetch(`/admin/import/${uploadId}/cancel`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'cancelled') {
-            window.location.reload();
-        } else {
-            throw new Error(data.detail || 'Failed to cancel import');
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Failed to cancel import: ' + error.message);
-    });
-}
 
-function restartImport(uploadId) {
-    if (!confirm('Are you sure you want to restart this import?')) {
-        return;
-    }
+    // Get all UI elements that we'll need to update
+    // CRITICAL: These IDs must match the HTML exactly
+    const uploadButton = document.getElementById('uploadButton');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const progressBar = document.getElementById('progressBar');
+    const uploadPercent = document.getElementById('uploadPercent');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const uploadedSize = document.getElementById('uploadedSize');
+    const totalSize = document.getElementById('totalSize');
     
-    fetch(`/admin/import/${uploadId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
+    // Show progress UI and disable upload button
+    uploadProgress.classList.remove('hidden');
+    uploadButton.disabled = true;
+    uploadButton.classList.add('opacity-50');
+    totalSize.textContent = (file.size / (1024 * 1024)).toFixed(1);
+
+    // CRITICAL: Must use XMLHttpRequest for upload progress
+    // Do not "improve" to fetch() - it doesn't support progress tracking
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/admin/upload');
+    
+    // Track upload progress
+    // This event fires repeatedly as chunks are uploaded
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressBar.style.width = percent + '%';
+            uploadPercent.textContent = percent;
+            uploadedSize.textContent = (e.loaded / (1024 * 1024)).toFixed(1);
         }
-    })
-    .then(response => response.json())
-    .catch(error => {
-        console.error('Error:', error);
-    })
-    .finally(() => {
-        // Always reload after a short delay to let the import start
-        setTimeout(() => window.location.reload(), 1000);
-    });
-}
+    };
+
+    // Handle response state changes
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {  // 4 = DONE
+            if (xhr.status === 200) {
+                // Success - show green status
+                uploadStatus.textContent = 'Upload complete!';
+                uploadStatus.classList.remove('text-[#1264a3]');
+                uploadStatus.classList.add('text-green-500');
+                progressBar.classList.add('bg-green-500');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                // Error - show red status and error message
+                uploadStatus.textContent = 'Upload failed!';
+                uploadStatus.classList.remove('text-[#1264a3]');
+                uploadStatus.classList.add('text-red-500');
+                progressBar.classList.add('bg-red-500');
+                uploadButton.disabled = false;
+                uploadButton.classList.remove('opacity-50');
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    alert('Upload failed: ' + (response.detail || xhr.statusText));
+                } catch (e) {
+                    alert('Upload failed: ' + xhr.statusText);
+                }
+            }
+        }
+    };
+
+    // Send the file
+    const formData = new FormData();
+    formData.append('file', file);
+    xhr.send(formData);
+});
 
 // Enable clear button only when at least one checkbox is checked
 const clearForm = document.querySelector('form[action="/admin/clear"]');
@@ -259,52 +300,6 @@ function updateClearButton() {
 
 clearCheckboxes.forEach(cb => {
     cb.addEventListener('change', updateClearButton);
-});
-
-// Handle file upload
-document.getElementById('uploadForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const file = document.getElementById('file').files[0];
-    if (!file) return;
-    
-    // Show progress
-    const progress = document.getElementById('uploadProgress');
-    progress.classList.remove('hidden');
-    
-    // Update size display
-    document.getElementById('totalSize').textContent = (file.size / (1024 * 1024)).toFixed(1);
-    
-    // Create and configure XHR
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/admin/upload');
-    
-    xhr.upload.onprogress = function(e) {
-        if (e.lengthComputable) {
-            const percent = Math.round((e.loaded / e.total) * 100);
-            document.getElementById('progressBar').style.width = percent + '%';
-            document.getElementById('uploadPercent').textContent = percent;
-            document.getElementById('uploadedSize').textContent = (e.loaded / (1024 * 1024)).toFixed(1);
-        }
-    };
-    
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4) {
-            if (xhr.status === 200) {
-                document.getElementById('uploadStatus').textContent = 'Upload Complete';
-                setTimeout(() => window.location.reload(), 1000);
-            } else {
-                document.getElementById('uploadStatus').textContent = 'Upload Failed';
-                document.getElementById('uploadStatus').classList.remove('text-[#1264a3]');
-                document.getElementById('uploadStatus').classList.add('text-red-500');
-            }
-        }
-    };
-    
-    // Create form data and send
-    const formData = new FormData();
-    formData.append('file', file);
-    xhr.send(formData);
 });
 
 // Handle training buttons

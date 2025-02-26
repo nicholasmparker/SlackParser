@@ -126,3 +126,169 @@ docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndex
 3. Search Not Working
    - Cause: Text indexes not created
    - Solution: Restart app to trigger index creation
+
+## Data Flow
+
+1. Upload
+   - Files are uploaded to `/data/uploads` via FastAPI endpoint
+   - Each upload gets a unique ID and is stored as `{upload_id}_{filename}`
+   - Upload status is tracked in MongoDB `uploads` collection
+
+2. Extraction
+   - Files are extracted to `/data/extracts/{upload_id}/`
+   - The extraction process is working correctly and should not be modified
+   - Extracted files are only cleaned up if import is successful
+
+3. Import
+   - Slack exports have a specific structure:
+     ```
+     slack-export-{TEAM_ID}-{TIMESTAMP}/
+     ├── channels/
+     │   └── {channel-name}/
+     │       ├── {channel-name}.txt       # Contains channel metadata and messages
+     │       └── canvas_in_the_conversation/  # Optional
+     ├── dms/
+     │   └── {user1-user2}/
+     │       └── {user1-user2}.txt        # Contains DM metadata and messages
+     ├── files/                           # Uploaded files
+     ├── huddle_transcripts/              # Call transcripts
+     └── lists/                           # Lists/saved items
+     ```
+
+   - Channel File Format (.txt):
+     ```
+     Channel Name: #{channel-name}
+     Channel ID: {C...}
+     Created: {YYYY-MM-DD HH:MM:SS} UTC by {username}
+     Type: Channel
+     Topic: "{topic text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
+     Purpose: "{purpose text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
+
+     #################################################################
+
+     Messages:
+
+     ---- {YYYY-MM-DD} ----
+     [{YYYY-MM-DD HH:MM:SS} UTC] <{username}> {message text}
+     [{YYYY-MM-DD HH:MM:SS} UTC] {username} joined the channel
+     [{YYYY-MM-DD HH:MM:SS} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}
+     ```
+
+   - DM File Format (.txt):
+     ```
+     Private conversation between {user1}, {user2}
+     Channel ID: {D...}
+     Created: {YYYY-MM-DD HH:MM:SS} UTC
+     Type: Direct Message
+
+     #################################################################
+
+     Messages:
+
+     ---- {YYYY-MM-DD} ----
+     [{YYYY-MM-DD HH:MM:SS} UTC] <{username}> {message text}
+     ```
+
+   - Message Variations:
+     1. Regular message: `[timestamp] <username> message text`
+     2. System message: `[timestamp] username joined/left/etc`
+     3. Message with reactions: 
+        ```
+        [timestamp] <username> message text
+            :emoji: username
+        ```
+     4. Edited message:
+        ```
+        [timestamp] <username> message text (edited)
+        ```
+     5. Thread replies: Indented under parent message
+     6. Archive message: Special JSON format for system actions
+     7. File share message:
+        ```
+        [timestamp] username shared file(s) {FILE_ID} with text:
+        ```
+
+## Database Schema
+
+1. `uploads` Collection
+   - `_id`: ObjectId - Unique upload ID
+   - `filename`: string - Original filename
+   - `status`: enum - Current status (UPLOADED, EXTRACTING, etc.)
+   - `created_at`: datetime - Upload start time
+   - `updated_at`: datetime - Last status update
+   - `size`: int - Total file size in bytes
+   - `uploaded_size`: int - Bytes uploaded so far
+   - `error`: string - Error message if failed
+   - `progress`: string - Human readable progress
+   - `progress_percent`: int - Progress as percentage
+
+2. `channels` Collection
+   - `id`: string - Slack channel ID (C... or D...)
+   - `name`: string - Channel name without # (for channels) or "DM: user1-user2" (for DMs)
+   - `created`: datetime - When channel was created
+   - `creator_username`: string - Username who created channel (channels only)
+   - `topic`: string - Channel topic text (channels only)
+   - `topic_set_by`: string - Username who set topic (channels only)
+   - `topic_set_at`: datetime - When topic was set (channels only)
+   - `purpose`: string - Channel purpose text (channels only)
+   - `purpose_set_by`: string - Username who set purpose (channels only)
+   - `purpose_set_at`: datetime - When purpose was set (channels only)
+   - `is_archived`: boolean - Whether channel is archived
+   - `archived_by`: string - Username who archived (if archived)
+   - `archived_at`: datetime - When archived (if archived)
+   - `is_dm`: boolean - Whether this is a DM
+   - `dm_users`: array - List of usernames in DM (DMs only)
+
+3. `users` Collection
+   - `username`: string - Username from messages
+   - `first_seen`: datetime - First message timestamp
+   - `last_seen`: datetime - Latest message timestamp
+   - `channels`: array - List of channel IDs user is in
+   - `message_count`: int - Total number of messages
+   - Note: Full user details not available in export
+
+4. `messages` Collection
+   - `_id`: ObjectId - Unique message ID
+   - `channel_id`: string - Channel/DM where message was sent
+   - `username`: string - Username who sent message
+   - `text`: string - Message text
+   - `ts`: datetime - Message timestamp
+   - `thread_ts`: datetime - Parent thread timestamp if reply
+   - `is_edited`: boolean - Whether message was edited
+   - `reactions`: array - Array of {emoji: string, users: array}
+   - `type`: string - "message", "system", "archive", or "file"
+   - `system_action`: string - For system messages (joined, left, etc)
+   - `file_id`: string - For file messages, the shared file ID
+
+5. `failed_imports` Collection
+   - `_id`: ObjectId - Unique failure ID
+   - `upload_id`: ObjectId - Reference to upload
+   - `file_path`: string - Path to file that failed
+   - `error`: string - Error message
+   - `line_number`: int - Line where error occurred
+   - `created_at`: datetime - When failure occurred
+
+## Important Notes
+
+1. Never modify working code:
+   - Upload functionality is working
+   - Extraction is working
+   - Only fix the import process
+
+2. Configuration:
+   - All config values must use environment variables
+   - Default values in .env.example
+   - No hardcoded values in code
+   - Document all env vars in README.md
+
+3. File Cleanup:
+   - Extracted files are only deleted after successful import
+   - Failed imports keep files for debugging
+   - Admin "Clear All" function still removes all files
+
+4. Error Handling:
+   - Track all errors during import
+   - Keep extracted files if any errors occur
+   - Update upload status with error details
+   - Log errors for debugging
+   - Record failed imports in database for retry

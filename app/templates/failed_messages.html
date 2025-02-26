@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-4">
+    <div class="mb-4">
+        <a href="/admin" class="text-[#1264a3] hover:text-[#0b4d82] transition-colors">← Back to Admin</a>
+    </div>
+
+    <div class="bg-[#222529] rounded-lg p-6 border border-gray-700">
+        <h2 class="text-xl font-medium text-gray-100 mb-4">Failed Message Parses</h2>
+        
+        {% if not channels %}
+        <p class="text-gray-400">No failed message parses found for this import.</p>
+        {% else %}
+        <div class="space-y-6">
+            {% for channel, messages in channels.items() %}
+            <div class="border-t border-gray-700 pt-4 first:border-t-0 first:pt-0">
+                <h3 class="text-lg font-medium text-gray-100 mb-2">Channel: {{ channel }}</h3>
+                <div class="space-y-4">
+                    {% for message in messages %}
+                    <div class="bg-[#1A1D21] rounded p-4">
+                        <pre class="text-gray-100 font-mono text-sm whitespace-pre-wrap mb-2">{{ message.line }}</pre>
+                        {% if message.error %}
+                        <div class="text-red-400 text-sm">Error: {{ message.error }}</div>
+                        {% endif %}
+                        <div class="text-gray-400 text-xs mt-2">Created: {{ message.created_at | strftime }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

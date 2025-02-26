@@ -32,6 +32,7 @@ FILE_STORAGE = os.getenv("FILE_STORAGE", "file_storage")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
 MONGO_DB = os.getenv("MONGO_DB", "slack_data")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:8000")
+DATA_DIR = os.getenv("DATA_DIR", "data")
 
 # Get base directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,6 +42,9 @@ static_dir = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 app.mount("/files", StaticFiles(directory=FILE_STORAGE, html=True), name="files")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# Upload directory from environment
+UPLOAD_DIR = Path(DATA_DIR) / "uploads"
 
 # Add template filters
 def timedelta_filter(value):
@@ -606,25 +610,25 @@ async def start_import(request: Request, upload_id: str):
         upload = await db.uploads.find_one({"_id": upload_id})
         
         if not upload:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Upload not found"}
+            return RedirectResponse(
+                url=f"/admin?error=upload_not_found",
+                status_code=303
             )
             
         # Only allow starting import if file is in a valid state
-        valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING"]
+        valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING", "extracting"]
         if upload["status"] not in valid_states:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": f"Cannot start import for file in state: {upload['status']}. Must be one of: {', '.join(valid_states)}"}
+            return RedirectResponse(
+                url=f"/admin?error=invalid_state&message=Cannot start import for file in state: {upload['status']}",
+                status_code=303
             )
             
         # Allow reimport if previous import had 0 messages or failed
         if upload["status"] == "complete":
             if upload.get("progress") and "Imported 0" not in upload["progress"]:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Cannot reimport file that has already been successfully imported"}
+                return RedirectResponse(
+                    url=f"/admin?error=already_imported",
+                    status_code=303
                 )
         
         # Reset import state
@@ -642,11 +646,7 @@ async def start_import(request: Request, upload_id: str):
         # Start import in background
         print(f"Creating background task for import of {upload['filename']}")
         task = asyncio.create_task(
-            import_data.import_slack_export(
-                db=db,
-                file_path=Path(upload["file_path"]),
-                upload_id=str(upload_id)  # Convert ObjectId to string
-            )
+            import_data.import_slack_export(db, Path(upload["file_path"]), str(upload_id))
         )
         
         # Add error handling for the background task
@@ -659,7 +659,7 @@ async def start_import(request: Request, upload_id: str):
                     db.uploads.update_one(
                         {"_id": upload_id},
                         {"$set": {
-                            "status": "error",
+                            "status": "error", 
                             "error": str(e),
                             "updated_at": datetime.utcnow()
                         }}
@@ -668,13 +668,16 @@ async def start_import(request: Request, upload_id: str):
         
         task.add_done_callback(handle_import_completion)
         
-        return {"status": "started"}
+        return RedirectResponse(
+            url=f"/admin?success=import_started",
+            status_code=303
+        )
         
     except Exception as e:
         logger.exception("Error starting import")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": str(e)}
+        return RedirectResponse(
+            url=f"/admin?error=import_failed&message={str(e)}",
+            status_code=303
         )
 
 @app.get("/admin/import/{upload_id}/status")
@@ -734,6 +737,42 @@ async def cancel_import(request: Request, upload_id: str):
         
     except Exception as e:
         logger.exception("Error cancelling import")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)}
+        )
+
+@app.get("/admin/import/{upload_id}/failed")
+async def get_failed_messages(request: Request, upload_id: str):
+    """Get failed message parses for an import"""
+    try:
+        db = request.app.db
+        upload_id = ObjectId(upload_id)
+        
+        # Get the failed messages
+        failed_messages = await db.failed_messages.find(
+            {"upload_id": str(upload_id)}
+        ).to_list(length=None)
+        
+        # Group by channel
+        grouped = {}
+        for msg in failed_messages:
+            channel = msg['channel']
+            if channel not in grouped:
+                grouped[channel] = []
+            grouped[channel].append(msg)
+            
+        return templates.TemplateResponse(
+            "failed_messages.html",
+            {
+                "request": request,
+                "upload_id": upload_id,
+                "channels": grouped
+            }
+        )
+        
+    except Exception as e:
+        logger.exception("Error getting failed messages")
         return JSONResponse(
             status_code=500,
             content={"detail": str(e)}
@@ -837,13 +876,13 @@ async def clear_data(request: Request):
         if clear_uploads:
             await app.db.uploads.drop()
             # Clear upload directory
-            upload_dir = Path("/data/uploads")
+            upload_dir = Path(DATA_DIR) / "uploads"
             if upload_dir.exists():
                 for f in upload_dir.glob("*"):
                     if f.is_file():
                         f.unlink()
             # Clear extract directory
-            extract_dir = Path("/data/extracts")
+            extract_dir = Path(DATA_DIR) / "extracts"
             if extract_dir.exists():
                 for f in extract_dir.glob("*"):
                     if f.is_dir():
@@ -864,8 +903,6 @@ async def clear_data(request: Request):
             url=f"/admin?error=clear_failed&message={str(e)}",
             status_code=303
         )
-
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
 @app.post("/admin/upload")
 async def upload_file(request: Request, file: UploadFile = File(...)):
@@ -914,28 +951,23 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
                 if total_size - last_update > 100 * 1024 * 1024:
                     await app.db.uploads.update_one(
                         {"_id": upload_id},
-                        {
-                            "$set": {
-                                "uploaded_size": total_size,
-                                "size": total_size
-                            }
-                        }
+                        {"$set": {
+                            "uploaded_size": total_size,
+                            "updated_at": datetime.utcnow()
+                        }}
                     )
                     last_update = total_size
-                    logging.info(f"Uploaded {total_size} bytes")
-        
+            
         # Update final status
         await app.db.uploads.update_one(
             {"_id": upload_id},
-            {
-                "$set": {
-                    "status": "UPLOADED",
-                    "size": total_size,
-                    "uploaded_size": total_size,
-                    "updated_at": datetime.utcnow(),
-                    "file_path": file_path
-                }
-            }
+            {"$set": {
+                "status": "UPLOADED",
+                "size": total_size,
+                "uploaded_size": total_size,
+                "file_path": str(file_path),
+                "updated_at": datetime.utcnow()
+            }}
         )
         
         logging.info(f"Upload complete: {total_size} bytes")
@@ -1039,6 +1071,12 @@ async def api_search(
 async def train_embeddings(request: Request, upload_id: str):
     """Train embeddings for all messages from an import"""
     try:
+        # Initialize embeddings service if not already initialized
+        if not hasattr(app, 'embeddings') or not app.embeddings:
+            logger.info("Initializing embeddings service")
+            app.embeddings = EmbeddingService()
+            await app.embeddings.initialize()
+            
         # Get import status from uploads collection
         logger.info(f"Looking for upload {upload_id} in uploads collection")
         query = {"_id": ObjectId(upload_id)}
@@ -1102,7 +1140,7 @@ async def train_embeddings(request: Request, upload_id: str):
             {"_id": ObjectId(upload_id)},
             {"$set": {"training_status": "completed", "training_progress": 100}}
         )
-        return {"status": "success"}
+        return RedirectResponse(url="/admin", status_code=303)
 
     except Exception as e:
         logger.error(f"Error training embeddings: {str(e)}")
@@ -1192,3 +1230,42 @@ async def health_check():
         status["status"] = "unhealthy"
     
     return status
+
+@app.post("/api/restart_import/{upload_id}")
+async def restart_import(upload_id: str):
+    """Restart a failed import"""
+    try:
+        # Get the upload record
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+            
+        # Only allow restarting failed imports
+        if upload["status"] != "ERROR":
+            raise HTTPException(status_code=400, detail="Can only restart failed imports")
+            
+        # Start the import
+        file_path = Path(upload["file_path"])
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Upload file not found")
+            
+        # Update status to start fresh
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "UPLOADED",
+                "error": None,
+                "progress": None,
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        # Start import in background
+        background_tasks.add_task(import_data.import_slack_export, app.db, file_path, upload_id)
+        
+        return {"status": "success"}
+        
+    except Exception as e:
+        logger.error(f"Error restarting import: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

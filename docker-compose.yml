@@ -11,16 +11,12 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
       - DATA_DIR=/data
       - FILE_STORAGE=/files
-      - TEST_MODE=true
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
     volumes:
       - ./app:/app/app
       - ./data:/data
       - ./files:/files
-      - ./data/uploads:/data/uploads
-      - ./data/extracts:/data/extracts
-      - ./file_storage:/file_storage
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
