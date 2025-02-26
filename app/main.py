@@ -11,7 +11,8 @@ from datetime import datetime
 import logging
 from pydantic import BaseModel
 from app.embeddings import EmbeddingService
-from bson import ObjectId, InvalidId
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import status
 from werkzeug.utils import secure_filename
 import asyncio
