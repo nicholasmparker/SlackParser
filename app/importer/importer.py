@@ -96,12 +96,17 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
     try:
         # Process all txt files
         txt_files = list(extract_path.rglob("*.txt"))
+        total_files = len(txt_files)
+        processed_files = 0
+        total_messages = 0
+
         for txt_file in txt_files:
             # Skip non-message files
             if (txt_file.name in ["title.txt", "metadata.txt"] or
                 "canvas_in_the_conversation" in str(txt_file) or
                 "/shares/" in str(txt_file) or
                 "/canvases/" in str(txt_file)):
+                processed_files += 1
                 continue
 
             try:
@@ -113,6 +118,19 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 # Store messages in batches
                 if messages:
                     await db.messages.insert_many([m.model_dump() for m in messages])
+                    total_messages += len(messages)
+
+                # Update progress
+                processed_files += 1
+                progress_percent = int((processed_files / total_files) * 100)
+                await db.uploads.update_one(
+                    {"_id": upload_id},
+                    {"$set": {
+                        "progress": f"Processed {processed_files}/{total_files} files ({total_messages} messages)",
+                        "progress_percent": progress_percent,
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
 
             except ImportError as e:
                 # Log error but continue processing other files
