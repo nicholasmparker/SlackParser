@@ -16,7 +16,7 @@ def test_channel_metadata():
         'Topic: "Welcome!", set on 2023-01-01 12:01:00 UTC by johndoe',
         'Purpose: "Company announcements", set on 2023-01-01 12:02:00 UTC by johndoe'
     ]
-    
+
     channel = parse_channel_metadata(lines)
     assert channel.id == "C1234567890"
     assert channel.name == "general"
@@ -38,7 +38,7 @@ def test_dm_metadata():
         "Created: 2023-01-01 12:00:00 UTC",
         "Type: Direct Message"
     ]
-    
+
     channel = parse_dm_metadata(lines)
     assert channel.id == "D1234567890"
     assert channel.name == "DM: user1-user2"
@@ -70,7 +70,7 @@ def test_join_message():
     msg = parse_message(line, 1)
     assert msg.username == "johndoe"
     assert msg.text == "joined the channel"
-    assert msg.type == "system"
+    assert msg.type == "join"
     assert msg.system_action == "joined"
 
 def test_archive_message():
@@ -103,3 +103,25 @@ def test_parser_error():
     with pytest.raises(ParserError) as exc:
         parse_message(line, 42)
     assert exc.value.line_number == 42
+
+def test_bot_message_with_json():
+    """Test parsing bot message with JSON content"""
+    line = '[2023-01-03 16:54:29 UTC] [<DoseSpot> bot] {"code":"invalid","diagnostics":"Bad request to add patient to dosespot, Patient sex at birth is missing"}'
+    msg = parse_message(line, 1)
+    assert msg is not None
+    assert msg.username == "DoseSpot"
+    assert msg.is_bot
+    assert msg.type == "message"
+    assert "code" in msg.data
+    assert msg.data["code"] == "invalid"
+
+def test_bot_message_with_json_and_int():
+    """Test parsing bot message with JSON containing integer values"""
+    line = '[2023-01-03 16:54:29 UTC] [<DoseSpot> bot] {"code":123,"diagnostics":"Bad request to add patient to dosespot, Patient sex at birth is missing"}'
+    msg = parse_message(line, 1)
+    assert msg is not None
+    assert msg.username == "DoseSpot"
+    assert msg.is_bot
+    assert msg.type == "message"
+    assert "code" in msg.data
+    assert msg.data["code"] == "123"  # Should be converted to string

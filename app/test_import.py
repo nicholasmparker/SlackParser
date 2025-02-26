@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 import pytest
-from app.slack_parser import parse_message_line, parse_dm_metadata, parse_channel_metadata
+from app.slack_parser import SlackMessageParser, parse_dm_metadata, parse_channel_metadata
 
 @pytest.mark.asyncio
 async def test_import_channel_or_dm(tmp_path: Path) -> tuple[int, list[str]]:
@@ -12,6 +12,7 @@ async def test_import_channel_or_dm(tmp_path: Path) -> tuple[int, list[str]]:
     messages = 0
     errors = []
 
+    parser = SlackMessageParser()
     # Create test channel file
     channel_file = tmp_path / "test_channel.txt"
     channel_file.write_text("""Channel Name: #general
@@ -63,7 +64,7 @@ Messages:
             if line.startswith("----"):
                 continue
 
-            message = parse_message_line(line)
+            message = parser.parse_message_line(line)
             if message:
                 messages += 1
                 msg_type = message["type"]
