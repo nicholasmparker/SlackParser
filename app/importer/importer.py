@@ -25,13 +25,14 @@ class ImportError(Exception):
     """Custom exception for import errors"""
     pass
 
-async def process_file(db: AsyncIOMotorClient, file_path: Path, upload_id: ObjectId) -> Tuple[Channel, List[Message]]:
+async def process_file(db: AsyncIOMotorClient, file_path: Path, upload_id: ObjectId, sync: bool = False) -> Tuple[Channel, List[Message]]:
     """Process a single channel or DM file.
 
     Args:
         db: MongoDB client
         file_path: Path to file
         upload_id: ID of upload
+        sync: Whether to use synchronous operations
 
     Returns:
         Tuple of (channel metadata, list of messages)
@@ -71,14 +72,24 @@ async def process_file(db: AsyncIOMotorClient, file_path: Path, upload_id: Objec
             except ParserError as e:
                 # Log error but continue processing
                 logger.warning(f"Error parsing message in {file_path}: {str(e)}")
-                await db.failed_imports.insert_one({
-                    "file": str(file_path),
-                    "line_number": i,
-                    "line": line,
-                    "error": str(e),
-                    "upload_id": upload_id,
-                    "timestamp": datetime.utcnow()
-                })
+                if sync:
+                    db.failed_imports.insert_one({
+                        "file": str(file_path),
+                        "line_number": i,
+                        "line": line,
+                        "error": str(e),
+                        "upload_id": upload_id,
+                        "timestamp": datetime.utcnow()
+                    })
+                else:
+                    await db.failed_imports.insert_one({
+                        "file": str(file_path),
+                        "line_number": i,
+                        "line": line,
+                        "error": str(e),
+                        "upload_id": upload_id,
+                        "timestamp": datetime.utcnow()
+                    })
 
         return channel, messages
 
@@ -95,6 +106,30 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
     """
     try:
         print(f"Starting import from {extract_path}")
+
+        # Check if extraction is complete
+        upload = await db.uploads.find_one({"_id": upload_id})
+        if not upload.get("extraction_complete"):
+            print("Extraction not complete, waiting...")
+            for _ in range(30):  # Wait up to 30 seconds
+                await asyncio.sleep(1)
+                upload = await db.uploads.find_one({"_id": upload_id})
+                if upload.get("extraction_complete"):
+                    print("Extraction complete, proceeding with import")
+                    break
+            else:
+                raise ImportError("Extraction did not complete in time")
+
+        # Update status to confirm we're starting
+        await db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "IMPORTING",
+                "progress": "Starting import process...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
 
         # Process all txt files
         txt_files = list(extract_path.rglob("*.txt"))
@@ -145,7 +180,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
 
             except ImportError as e:
                 print(f"Error importing {txt_file}: {e}")
-                # Log error but continue processing other files
+                # Log error but continue processing
                 continue
 
         # Update status to complete
@@ -207,6 +242,24 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         {"$set": channel.model_dump()},
                         upsert=True
                     )
+                    
+                    # Also insert into conversations collection for UI
+                    conversation = {
+                        "name": channel.name,
+                        "type": "dm" if channel.is_dm else "channel",
+                        "channel_id": channel.id,
+                        "created_at": channel.created,
+                        "updated_at": datetime.utcnow(),
+                        "topic": channel.topic,
+                        "purpose": channel.purpose,
+                        "is_archived": channel.is_archived,
+                        "dm_users": channel.dm_users if channel.is_dm else []
+                    }
+                    await db.conversations.update_one(
+                        {"channel_id": channel.id},
+                        {"$set": conversation},
+                        upsert=True
+                    )
 
                     # Insert messages and track users
                     if messages:
@@ -214,6 +267,8 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         for msg in messages:
                             msg_dict = msg.model_dump(by_alias=True)
                             msg_dict["_id"] = ObjectId()  # Generate new ID for each message
+                            # Add conversation_id for UI
+                            msg_dict["conversation_id"] = channel.id
                             message_docs.append(msg_dict)
 
                             if msg.username not in users:
@@ -270,6 +325,24 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         {"$set": channel.model_dump()},
                         upsert=True
                     )
+                    
+                    # Also insert into conversations collection for UI
+                    conversation = {
+                        "name": channel.name,
+                        "type": "dm" if channel.is_dm else "channel",
+                        "channel_id": channel.id,
+                        "created_at": channel.created,
+                        "updated_at": datetime.utcnow(),
+                        "topic": channel.topic,
+                        "purpose": channel.purpose,
+                        "is_archived": channel.is_archived,
+                        "dm_users": channel.dm_users if channel.is_dm else []
+                    }
+                    await db.conversations.update_one(
+                        {"channel_id": channel.id},
+                        {"$set": conversation},
+                        upsert=True
+                    )
 
                     # Insert messages and track users
                     if messages:
@@ -277,6 +350,8 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         for msg in messages:
                             msg_dict = msg.model_dump(by_alias=True)
                             msg_dict["_id"] = ObjectId()  # Generate new ID for each message
+                            # Add conversation_id for UI
+                            msg_dict["conversation_id"] = channel.id
                             message_docs.append(msg_dict)
 
                             if msg.username not in users:

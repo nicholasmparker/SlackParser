@@ -211,7 +211,7 @@ async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, uploa
                     }}
                 )
     print("Extraction complete")
-    
+
     # Update status to EXTRACTED when complete
     await db.uploads.update_one(
         {"_id": upload_id},
@@ -644,16 +644,16 @@ async def admin_page(request: Request):
 async def start_import(upload_id: str, request: Request):
     """Start the import process for an upload."""
     print(f"=== START IMPORT CALLED FOR {upload_id} ===")
-    
+
     # Get database
     db = request.app.db
-    
+
     # Convert upload_id to ObjectId
     upload_id_obj = ObjectId(upload_id)
-    
+
     # Get upload - handle both async and sync MongoDB clients
     is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
-    
+
     try:
         if is_sync_client:  # Sync client
             print("Using synchronous MongoDB client")
@@ -661,30 +661,30 @@ async def start_import(upload_id: str, request: Request):
         else:  # Async client
             print("Using asynchronous MongoDB client")
             upload = await db.uploads.find_one({"_id": upload_id_obj})
-        
+
         if not upload:
             print(f"Upload not found: {upload_id}")
             return {"status": "error", "message": "Upload not found"}
-        
+
         print(f"Found upload: {upload}")
-        
+
         # Check current status
         current_status = upload.get("status", "UNKNOWN")
         print(f"Current status: {current_status}")
-        
+
         if current_status == "EXTRACTED":
             print("Starting import phase")
-            
+
             # Set extract path
             extract_path = Path("/data/extracts") / upload_id
             print(f"Extract path: {extract_path}")
-            
+
             # Find the actual Slack export directory (it's usually a subdirectory)
             slack_export_dirs = list(extract_path.glob("slack-export*"))
             if slack_export_dirs:
                 extract_path = slack_export_dirs[0]
                 print(f"Found Slack export directory: {extract_path}")
-            
+
             if not is_sync_client:  # Async client
                 # Use async version
                 asyncio.create_task(import_slack_export(db, extract_path, upload_id_obj))
@@ -697,17 +697,17 @@ async def start_import(upload_id: str, request: Request):
                 thread.daemon = True
                 thread.start()
                 print(f"Started import thread: {thread.name}")
-            
+
             print("=== Started import phase successfully ===\n")
             return {"status": "success", "message": "Import started"}
-        
+
         elif current_status == "UPLOADED":
             print("Starting extraction phase")
-            
+
             # Start extraction in a separate thread
             file_path = upload.get("file_path", "")
             extract_path = Path("/data/extracts") / upload_id
-            
+
             if not is_sync_client:  # Async client
                 # Use async version
                 asyncio.create_task(extract_with_progress(db, file_path, extract_path, upload_id_obj))
@@ -720,14 +720,14 @@ async def start_import(upload_id: str, request: Request):
                 thread.daemon = True
                 thread.start()
                 print(f"Started extraction thread: {thread.name}")
-            
+
             print("=== Started extraction phase successfully ===\n")
             return {"status": "success", "message": "Extraction started"}
-        
+
         else:
             print(f"=== Started {current_status} phase successfully ===\n")
             return {"status": "success", "message": f"{current_status} started"}
-            
+
     except Exception as e:
         print(f"Error in start_import: {e}")
         print(f"Error type: {type(e)}")
@@ -746,12 +746,12 @@ async def get_import_status(upload_id: str, request: Request):
 
     # Get upload - handle both async and sync MongoDB clients
     is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
-    
+
     if is_sync_client:  # Sync client
         upload = db.uploads.find_one({"_id": upload_id})
     else:  # Async client
         upload = await db.uploads.find_one({"_id": upload_id})
-        
+
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
 
@@ -769,10 +769,10 @@ async def cancel_import(request: Request, upload_id: str):
     try:
         db = request.app.db
         upload_id = ObjectId(upload_id)
-        
+
         # Get upload - handle both async and sync MongoDB clients
         is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
-        
+
         if is_sync_client:  # Sync client
             upload = db.uploads.find_one({"_id": upload_id})
         else:  # Async client
@@ -1383,7 +1383,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
             upload_id_obj = ObjectId(upload_id)
         else:
             upload_id_obj = upload_id
-            
+
         # Update status to IMPORTING
         await db.uploads.update_one(
             {"_id": upload_id_obj},
@@ -1396,18 +1396,18 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 "updated_at": datetime.utcnow()
             }}
         )
-        
+
         total_files = 0
         processed_files = 0
         total_messages = 0
-        
+
         # Process channel files
         channels_dir = extract_path / "channels"
         if channels_dir.exists():
             # Count total files for progress tracking
             channel_files = list(channels_dir.rglob("*.txt"))
             total_files += len(channel_files)
-            
+
             for i, file_path in enumerate(channel_files):
                 try:
                     channel, messages = await process_file(db, file_path, upload_id)
@@ -1415,9 +1415,34 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                     # Store channel metadata
                     await db.channels.insert_one(channel.model_dump())
 
+                    # Also insert into conversations collection for UI
+                    conversation = {
+                        "name": channel.name,
+                        "type": "dm" if channel.is_dm else "channel",
+                        "channel_id": channel.id,
+                        "created_at": channel.created,
+                        "updated_at": datetime.utcnow(),
+                        "topic": channel.topic,
+                        "purpose": channel.purpose,
+                        "is_archived": channel.is_archived,
+                        "dm_users": channel.dm_users if channel.is_dm else []
+                    }
+                    db.conversations.update_one(
+                        {"channel_id": channel.id},
+                        {"$set": conversation},
+                        upsert=True
+                    )
+
                     # Store messages in batches
                     if messages:
-                        await db.messages.insert_many([m.model_dump() for m in messages])
+                        # Add conversation_id to messages for UI
+                        message_docs = []
+                        for msg in messages:
+                            msg_dict = msg.model_dump()
+                            msg_dict["conversation_id"] = channel.id
+                            message_docs.append(msg_dict)
+                        
+                        await db.messages.insert_many(message_docs)
                         total_messages += len(messages)
 
                     # Update progress every 10 files
@@ -1450,7 +1475,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
             dm_files = list(dms_dir.rglob("*.txt"))
             dm_total = len(dm_files)
             total_files += dm_total
-            
+
             for i, file_path in enumerate(dm_files):
                 try:
                     channel, messages = await process_file(db, file_path, upload_id)
@@ -1458,11 +1483,36 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                     # Store channel metadata
                     await db.channels.insert_one(channel.model_dump())
 
+                    # Also insert into conversations collection for UI
+                    conversation = {
+                        "name": channel.name,
+                        "type": "dm" if channel.is_dm else "channel",
+                        "channel_id": channel.id,
+                        "created_at": channel.created,
+                        "updated_at": datetime.utcnow(),
+                        "topic": channel.topic,
+                        "purpose": channel.purpose,
+                        "is_archived": channel.is_archived,
+                        "dm_users": channel.dm_users if channel.is_dm else []
+                    }
+                    db.conversations.update_one(
+                        {"channel_id": channel.id},
+                        {"$set": conversation},
+                        upsert=True
+                    )
+
                     # Store messages in batches
                     if messages:
-                        await db.messages.insert_many([m.model_dump() for m in messages])
-                        total_messages += len(messages)
+                        # Add conversation_id to messages for UI
+                        message_docs = []
+                        for msg in messages:
+                            msg_dict = msg.model_dump()
+                            msg_dict["conversation_id"] = channel.id
+                            message_docs.append(msg_dict)
                         
+                        await db.messages.insert_many(message_docs)
+                        total_messages += len(messages)
+
                     # Update progress every 10 files
                     processed_files += 1
                     if processed_files % 10 == 0 or processed_files == total_files:
@@ -1485,7 +1535,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                         "error": str(e),
                         "timestamp": datetime.utcnow()
                     })
-                    
+
         # Update status to IMPORTED when complete
         await db.uploads.update_one(
             {"_id": upload_id_obj},
@@ -1506,7 +1556,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
             upload_id_obj = ObjectId(upload_id)
         else:
             upload_id_obj = upload_id
-            
+
         await db.uploads.update_one(
             {"_id": upload_id_obj},
             {"$set": {
@@ -1545,7 +1595,7 @@ def extract_with_progress_sync(db, zip_path: str, extract_path: Path, upload_id:
                 )
 
     print("Extraction complete")
-    
+
     # Update status to EXTRACTED when complete
     db.uploads.update_one(
         {"_id": upload_id},
@@ -1563,12 +1613,12 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
     print(f"Importing from {extract_path}")
     print(f"Upload ID: {upload_id}")
     print(f"DB type: {type(db)}")
-    
+
     # Convert upload_id to ObjectId if it's a string
     if isinstance(upload_id, str):
         upload_id = ObjectId(upload_id)
         print(f"Converted upload_id to ObjectId: {upload_id}")
-    
+
     # Update status to IMPORTING
     try:
         db.uploads.update_one(
@@ -1583,13 +1633,13 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         print("Updated status to IMPORTING")
     except Exception as e:
         print(f"Error updating status to IMPORTING: {e}")
-    
+
     # Get list of channel files
     try:
         channel_files = list(extract_path.glob("**/*.txt"))
         total_files = len(channel_files)
         print(f"Found {total_files} channel files in {extract_path}")
-        
+
         if total_files == 0:
             print(f"WARNING: No channel files found in {extract_path}")
             # List the directory contents to debug
@@ -1600,7 +1650,7 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         print(f"Error getting channel files: {e}")
         total_files = 0
         channel_files = []
-    
+
     # Process each channel file
     total_messages = 0
     for i, channel_file in enumerate(channel_files):
@@ -1608,21 +1658,47 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         try:
             # Process the file
             channel, messages = process_file(db, channel_file, upload_id, sync=True)
-            
+
             # Store channel metadata
             print(f"Storing channel metadata for {channel.name}")
             result = db.channels.insert_one(channel.model_dump())
             print(f"Channel inserted with ID: {result.inserted_id}")
-            
+
+            # Also insert into conversations collection for UI
+            conversation = {
+                "name": channel.name,
+                "type": "dm" if channel.is_dm else "channel",
+                "channel_id": channel.id,
+                "created_at": channel.created,
+                "updated_at": datetime.utcnow(),
+                "topic": channel.topic,
+                "purpose": channel.purpose,
+                "is_archived": channel.is_archived,
+                "dm_users": channel.dm_users if channel.is_dm else []
+            }
+            db.conversations.update_one(
+                {"channel_id": channel.id},
+                {"$set": conversation},
+                upsert=True
+            )
+            print(f"Conversation inserted for UI")
+
             # Store messages in batches
             if messages:
                 print(f"Storing {len(messages)} messages")
-                result = db.messages.insert_many([m.model_dump() for m in messages])
+                # Add conversation_id to messages for UI
+                message_docs = []
+                for msg in messages:
+                    msg_dict = msg.model_dump()
+                    msg_dict["conversation_id"] = channel.id
+                    message_docs.append(msg_dict)
+                
+                result = db.messages.insert_many(message_docs)
                 print(f"Inserted {len(result.inserted_ids)} messages")
                 total_messages += len(messages)
             else:
                 print("No messages to store")
-            
+
             # Update progress
             percent = int(((i + 1) / total_files) * 100)
             db.uploads.update_one(
@@ -1644,7 +1720,7 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
                 "error": str(e),
                 "timestamp": datetime.utcnow()
             })
-    
+
     # Update status to IMPORTED
     try:
         db.uploads.update_one(
@@ -1659,7 +1735,7 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         print(f"Updated status to IMPORTED. Processed {total_files} files with {total_messages} messages.")
     except Exception as e:
         print(f"Error updating status to IMPORTED: {e}")
-    
+
     print("=== IMPORT_SLACK_EXPORT_SYNC COMPLETED ===")
 
 @app.get("/admin/debug", response_class=HTMLResponse)
@@ -1668,19 +1744,19 @@ async def debug_page(request: Request):
     # Get a database connection
     client = AsyncIOMotorClient(MONGO_URL)
     db = client[MONGO_DB]
-    
+
     # Get all uploads
     uploads = await db.uploads.find().to_list(length=100)
-    
+
     # Convert ObjectId to string for JSON serialization
     for upload in uploads:
         upload["_id"] = str(upload["_id"])
-    
+
     # Simplified debug page without template extraction
     return templates.TemplateResponse(
-        "debug.html", 
+        "debug.html",
         {
-            "request": request, 
+            "request": request,
             "uploads": uploads,
             "uploads_json": json.dumps(uploads, indent=2),
             "server_template": "Disabled for debugging",
