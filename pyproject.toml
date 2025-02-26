@@ -1,0 +1,6 @@
+[tool.bandit]
+exclude_dirs = ["tests", "test_*"]
+skips = ["B101", "B104"]  # Skip assert statements and hardcoded IP checks
+
+[tool.bandit.assert_used]
+skips = ["test_*.py", "*_test.py"]
