@@ -1,3 +1,4 @@
+from pymongo.database import Database
 from fastapi import FastAPI, Request, Query, HTTPException, Body, File, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -210,6 +211,17 @@ async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, uploa
                     }}
                 )
     print("Extraction complete")
+    
+    # Update status to EXTRACTED when complete
+    await db.uploads.update_one(
+        {"_id": upload_id},
+        {"$set": {
+            "status": "EXTRACTED",
+            "progress": "Extraction complete",
+            "progress_percent": 100,
+            "updated_at": datetime.utcnow()
+        }}
+    )
 
 @app.get("/")
 async def home(request: Request):
@@ -630,70 +642,98 @@ async def admin_page(request: Request):
 
 @app.post("/admin/import/{upload_id}/start")
 async def start_import(upload_id: str, request: Request):
-    """Start importing a Slack export."""
-    print(f"\n=== Starting import for {upload_id} ===")
+    """Start the import process for an upload."""
+    print(f"=== START IMPORT CALLED FOR {upload_id} ===")
+    
+    # Get database
+    db = request.app.db
+    
+    # Convert upload_id to ObjectId
+    upload_id_obj = ObjectId(upload_id)
+    
+    # Get upload - handle both async and sync MongoDB clients
+    is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
+    
     try:
-        # Get database
-        db = request.app.db
-
-        # Convert upload_id to ObjectId
-        upload_id = ObjectId(upload_id)
-        print(f"Looking up upload {upload_id}")
-
-        # Get upload
-        upload = await db.uploads.find_one({"_id": upload_id})
+        if is_sync_client:  # Sync client
+            print("Using synchronous MongoDB client")
+            upload = db.uploads.find_one({"_id": upload_id_obj})
+        else:  # Async client
+            print("Using asynchronous MongoDB client")
+            upload = await db.uploads.find_one({"_id": upload_id_obj})
+        
         if not upload:
-            print(f"Upload {upload_id} not found!")
-            raise HTTPException(status_code=404, detail="Upload not found")
-
+            print(f"Upload not found: {upload_id}")
+            return {"status": "error", "message": "Upload not found"}
+        
         print(f"Found upload: {upload}")
-
-        # Create extract directory
-        extract_path = Path("/data/extracts") / str(upload_id)
-        print(f"Creating extract directory: {extract_path}")
-        extract_path.mkdir(parents=True, exist_ok=True)
-
-        # Update status to extracting
-        print("Updating status to EXTRACTING")
-        await db.uploads.update_one(
-            {"_id": upload_id},
-            {"$set": {
-                "status": "EXTRACTING",
-                "progress": "Starting extraction...",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
-        )
-
-        print(f"Starting extraction from {upload['file_path']}")
-        # Extract zip file
-        await extract_with_progress(db, str(upload["file_path"]), extract_path, upload_id)
-
-        print("Extraction complete, updating status to IMPORTING")
-        # Update status back to importing
-        await db.uploads.update_one(
-            {"_id": upload_id},
-            {"$set": {
-                "status": "IMPORTING",
-                "progress": "Starting import...",
-                "progress_percent": 0,
-                "updated_at": datetime.utcnow()
-            }}
-        )
-
-        print("Starting import task")
-        # Start import in background
-        task = asyncio.create_task(
-            import_slack_export(db, extract_path, upload_id)
-        )
-
-        print("=== Import started successfully ===\n")
-        return {"status": "ok"}
-
+        
+        # Check current status
+        current_status = upload.get("status", "UNKNOWN")
+        print(f"Current status: {current_status}")
+        
+        if current_status == "EXTRACTED":
+            print("Starting import phase")
+            
+            # Set extract path
+            extract_path = Path("/data/extracts") / upload_id
+            print(f"Extract path: {extract_path}")
+            
+            # Find the actual Slack export directory (it's usually a subdirectory)
+            slack_export_dirs = list(extract_path.glob("slack-export*"))
+            if slack_export_dirs:
+                extract_path = slack_export_dirs[0]
+                print(f"Found Slack export directory: {extract_path}")
+            
+            if not is_sync_client:  # Async client
+                # Use async version
+                asyncio.create_task(import_slack_export(db, extract_path, upload_id_obj))
+            else:  # Sync client
+                # Use sync version
+                thread = threading.Thread(
+                    target=import_slack_export_sync,
+                    args=(db, extract_path, upload_id)
+                )
+                thread.daemon = True
+                thread.start()
+                print(f"Started import thread: {thread.name}")
+            
+            print("=== Started import phase successfully ===\n")
+            return {"status": "success", "message": "Import started"}
+        
+        elif current_status == "UPLOADED":
+            print("Starting extraction phase")
+            
+            # Start extraction in a separate thread
+            file_path = upload.get("file_path", "")
+            extract_path = Path("/data/extracts") / upload_id
+            
+            if not is_sync_client:  # Async client
+                # Use async version
+                asyncio.create_task(extract_with_progress(db, file_path, extract_path, upload_id_obj))
+            else:  # Sync client
+                # Use sync version
+                thread = threading.Thread(
+                    target=extract_with_progress_sync,
+                    args=(db, file_path, extract_path, upload_id)
+                )
+                thread.daemon = True
+                thread.start()
+                print(f"Started extraction thread: {thread.name}")
+            
+            print("=== Started extraction phase successfully ===\n")
+            return {"status": "success", "message": "Extraction started"}
+        
+        else:
+            print(f"=== Started {current_status} phase successfully ===\n")
+            return {"status": "success", "message": f"{current_status} started"}
+            
     except Exception as e:
-        print(f"Error starting import: {str(e)}")
-        logger.exception("Error starting import")
-        raise
+        print(f"Error in start_import: {e}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
 @app.get("/admin/import/{upload_id}/status")
 async def get_import_status(upload_id: str, request: Request):
@@ -704,8 +744,14 @@ async def get_import_status(upload_id: str, request: Request):
     # Convert upload_id to ObjectId
     upload_id = ObjectId(upload_id)
 
-    # Get upload
-    upload = await db.uploads.find_one({"_id": upload_id})
+    # Get upload - handle both async and sync MongoDB clients
+    is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
+    
+    if is_sync_client:  # Sync client
+        upload = db.uploads.find_one({"_id": upload_id})
+    else:  # Async client
+        upload = await db.uploads.find_one({"_id": upload_id})
+        
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
 
@@ -721,9 +767,16 @@ async def get_import_status(upload_id: str, request: Request):
 async def cancel_import(request: Request, upload_id: str):
     """Cancel a stuck import"""
     try:
-        db = app.db
+        db = request.app.db
         upload_id = ObjectId(upload_id)
-        upload = await db.uploads.find_one({"_id": upload_id})
+        
+        # Get upload - handle both async and sync MongoDB clients
+        is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
+        
+        if is_sync_client:  # Sync client
+            upload = db.uploads.find_one({"_id": upload_id})
+        else:  # Async client
+            upload = await db.uploads.find_one({"_id": upload_id})
 
         if not upload:
             return JSONResponse(
@@ -732,28 +785,42 @@ async def cancel_import(request: Request, upload_id: str):
             )
 
         # Only allow cancelling if in an active state
-        active_states = ["extracting", "importing_channels", "importing_dms", "generating_embeddings", "IMPORTING"]
+        active_states = ["EXTRACTING", "IMPORTING", "EMBEDDING"]
         if upload["status"] not in active_states:
             return JSONResponse(
                 status_code=400,
                 content={"detail": f"Cannot cancel import that is not in progress. Current status: {upload['status']}"}
             )
 
-        # Update status to cancelled
-        await db.uploads.update_one(
-            {"_id": upload_id},
-            {
-                "$set": {
-                    "status": "cancelled",
-                    "error": None,
-                    "progress": "Import cancelled by user",
-                    "progress_percent": 0,
-                    "updated_at": datetime.utcnow()
+        # Update status to UPLOADED so it can be restarted
+        if is_sync_client:  # Sync client
+            db.uploads.update_one(
+                {"_id": upload_id},
+                {
+                    "$set": {
+                        "status": "UPLOADED",
+                        "error": None,
+                        "progress": "Import cancelled and reset. Ready to restart.",
+                        "progress_percent": 0,
+                        "updated_at": datetime.utcnow()
+                    }
                 }
-            }
-        )
+            )
+        else:  # Async client
+            await db.uploads.update_one(
+                {"_id": upload_id},
+                {
+                    "$set": {
+                        "status": "UPLOADED",
+                        "error": None,
+                        "progress": "Import cancelled and reset. Ready to restart.",
+                        "progress_percent": 0,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
 
-        return {"status": "cancelled"}
+        return {"success": True, "status": "UPLOADED"}
 
     except Exception as e:
         logger.exception("Error cancelling import")
@@ -766,7 +833,7 @@ async def cancel_import(request: Request, upload_id: str):
 async def get_failed_messages(request: Request, upload_id: str):
     """Get failed message parses for an import"""
     try:
-        db = app.db
+        db = request.app.db
         upload_id = ObjectId(upload_id)
 
         # Get the failed messages
@@ -1036,9 +1103,9 @@ async def api_search(
         # Extract conversation IDs from results, skipping any without conversation_id
         logger.info(f"Got {len(search_results)} results")
         conversation_ids = list(set(
-            r["metadata"]["conversation_id"]
+            r["metadata"]["channel"]
             for r in search_results
-            if "metadata" in r and "conversation_id" in r["metadata"]
+            if "metadata" in r and "channel" in r["metadata"]
         ))
 
         # Get conversation details
@@ -1052,7 +1119,7 @@ async def api_search(
         results = []
         for r in search_results:
             # Skip results without proper metadata
-            if "metadata" not in r or "conversation_id" not in r["metadata"]:
+            if "metadata" not in r or "channel" not in r["metadata"]:
                 logger.warning(f"Skipping result without proper metadata: {r}")
                 continue
 
@@ -1064,8 +1131,8 @@ async def api_search(
 
             results.append({
                 "text": r["text"],
-                "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
-                "conversation_id": r["metadata"]["conversation_id"],
+                "conversation": conv_map.get(str(r["metadata"]["channel"]), {"name": "Unknown", "type": "unknown"}),
+                "conversation_id": r["metadata"]["channel"],
                 "user": r["metadata"].get("user", "unknown"),
                 "ts": ts,
                 "score": r["similarity"],
@@ -1280,7 +1347,7 @@ async def restart_import(upload_id: str):
 
         # Start import in background
         task = asyncio.create_task(
-            import_slack_export(app.db, extract_path, upload_id)
+            import_slack_export(app.db, extract_path, str(upload_id))
         )
 
         # Add error handling for the background task
@@ -1311,10 +1378,37 @@ async def restart_import(upload_id: str):
 async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload_id: str) -> None:
     """Import a Slack export file"""
     try:
+        # Convert upload_id to ObjectId if it's a string
+        if isinstance(upload_id, str):
+            upload_id_obj = ObjectId(upload_id)
+        else:
+            upload_id_obj = upload_id
+            
+        # Update status to IMPORTING
+        await db.uploads.update_one(
+            {"_id": upload_id_obj},
+            {"$set": {
+                "status": "IMPORTING",
+                "progress": "Starting import process...",
+                "progress_percent": 0,
+                "stage_progress": 0,
+                "current_stage": "IMPORTING",
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        total_files = 0
+        processed_files = 0
+        total_messages = 0
+        
         # Process channel files
         channels_dir = extract_path / "channels"
         if channels_dir.exists():
-            for file_path in channels_dir.rglob("*.txt"):
+            # Count total files for progress tracking
+            channel_files = list(channels_dir.rglob("*.txt"))
+            total_files += len(channel_files)
+            
+            for i, file_path in enumerate(channel_files):
                 try:
                     channel, messages = await process_file(db, file_path, upload_id)
 
@@ -1324,20 +1418,40 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                     # Store messages in batches
                     if messages:
                         await db.messages.insert_many([m.model_dump() for m in messages])
+                        total_messages += len(messages)
+
+                    # Update progress every 10 files
+                    processed_files += 1
+                    if processed_files % 10 == 0 or processed_files == total_files:
+                        percent = int((processed_files / total_files) * 100) if total_files > 0 else 0
+                        await db.uploads.update_one(
+                            {"_id": upload_id_obj},
+                            {"$set": {
+                                "progress": f"Importing... {percent}% ({total_messages} messages)",
+                                "progress_percent": percent,
+                                "stage_progress": percent,
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
 
                 except Exception as e:
                     logger.error(f"Error importing {file_path}: {str(e)}")
                     await db.failed_imports.insert_one({
+                        "upload_id": upload_id,
                         "file": str(file_path),
                         "error": str(e),
-                        "upload_id": upload_id,
                         "timestamp": datetime.utcnow()
                     })
 
         # Process DM files
         dms_dir = extract_path / "dms"
         if dms_dir.exists():
-            for file_path in dms_dir.rglob("*.txt"):
+            # Count total files for progress tracking
+            dm_files = list(dms_dir.rglob("*.txt"))
+            dm_total = len(dm_files)
+            total_files += dm_total
+            
+            for i, file_path in enumerate(dm_files):
                 try:
                     channel, messages = await process_file(db, file_path, upload_id)
 
@@ -1347,16 +1461,229 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                     # Store messages in batches
                     if messages:
                         await db.messages.insert_many([m.model_dump() for m in messages])
+                        total_messages += len(messages)
+                        
+                    # Update progress every 10 files
+                    processed_files += 1
+                    if processed_files % 10 == 0 or processed_files == total_files:
+                        percent = int((processed_files / total_files) * 100) if total_files > 0 else 0
+                        await db.uploads.update_one(
+                            {"_id": upload_id_obj},
+                            {"$set": {
+                                "progress": f"Importing... {percent}% ({total_messages} messages)",
+                                "progress_percent": percent,
+                                "stage_progress": percent,
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
 
                 except Exception as e:
                     logger.error(f"Error importing {file_path}: {str(e)}")
                     await db.failed_imports.insert_one({
+                        "upload_id": upload_id,
                         "file": str(file_path),
                         "error": str(e),
-                        "upload_id": upload_id,
                         "timestamp": datetime.utcnow()
                     })
+                    
+        # Update status to IMPORTED when complete
+        await db.uploads.update_one(
+            {"_id": upload_id_obj},
+            {"$set": {
+                "status": "IMPORTED",
+                "progress": f"Import complete: {total_messages} messages from {processed_files} files",
+                "progress_percent": 100,
+                "stage_progress": 100,
+                "current_stage": "COMPLETE",
+                "updated_at": datetime.utcnow()
+            }}
+        )
 
     except Exception as e:
         logger.error(f"Error importing from {extract_path}: {str(e)}")
+        # Update status to ERROR
+        if isinstance(upload_id, str):
+            upload_id_obj = ObjectId(upload_id)
+        else:
+            upload_id_obj = upload_id
+            
+        await db.uploads.update_one(
+            {"_id": upload_id_obj},
+            {"$set": {
+                "status": "ERROR",
+                "progress": f"Import failed: {str(e)}",
+                "error": str(e),
+                "updated_at": datetime.utcnow()
+            }}
+        )
         raise
+
+# Add synchronous versions of our async functions
+def extract_with_progress_sync(db, zip_path: str, extract_path: Path, upload_id: ObjectId):
+    """Extract ZIP file with progress updates - synchronous version"""
+    print(f"Starting extraction with progress from {zip_path} to {extract_path}")
+    total_size = get_zip_total_size(zip_path)
+    extracted_size = 0
+
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            print(f"Extracting {file_info.filename}")
+            zip_ref.extract(file_info, extract_path)
+            extracted_size += file_info.file_size
+            percent = int((extracted_size / total_size) * 100)
+
+            # Update progress every 5%
+            if percent % 5 == 0:
+                db.uploads.update_one(
+                    {"_id": upload_id},
+                    {"$set": {
+                        "progress": f"Extracting... {percent}%",
+                        "progress_percent": percent,
+                        "stage_progress": percent,
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
+
+    print("Extraction complete")
+    
+    # Update status to EXTRACTED when complete
+    db.uploads.update_one(
+        {"_id": upload_id},
+        {"$set": {
+            "status": "EXTRACTED",
+            "progress": "Extraction complete",
+            "progress_percent": 100,
+            "updated_at": datetime.utcnow()
+        }}
+    )
+
+def import_slack_export_sync(db, extract_path: Path, upload_id: str):
+    """Import a Slack export file - synchronous version"""
+    print(f"=== IMPORT_SLACK_EXPORT_SYNC STARTED ===")
+    print(f"Importing from {extract_path}")
+    print(f"Upload ID: {upload_id}")
+    print(f"DB type: {type(db)}")
+    
+    # Convert upload_id to ObjectId if it's a string
+    if isinstance(upload_id, str):
+        upload_id = ObjectId(upload_id)
+        print(f"Converted upload_id to ObjectId: {upload_id}")
+    
+    # Update status to IMPORTING
+    try:
+        db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "IMPORTING",
+                "progress": "Starting import process...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        print("Updated status to IMPORTING")
+    except Exception as e:
+        print(f"Error updating status to IMPORTING: {e}")
+    
+    # Get list of channel files
+    try:
+        channel_files = list(extract_path.glob("**/*.txt"))
+        total_files = len(channel_files)
+        print(f"Found {total_files} channel files in {extract_path}")
+        
+        if total_files == 0:
+            print(f"WARNING: No channel files found in {extract_path}")
+            # List the directory contents to debug
+            print(f"Directory contents of {extract_path}:")
+            for item in extract_path.iterdir():
+                print(f"  - {item}")
+    except Exception as e:
+        print(f"Error getting channel files: {e}")
+        total_files = 0
+        channel_files = []
+    
+    # Process each channel file
+    total_messages = 0
+    for i, channel_file in enumerate(channel_files):
+        print(f"Processing file {i+1}/{total_files}: {channel_file}")
+        try:
+            # Process the file
+            channel, messages = process_file(db, channel_file, upload_id, sync=True)
+            
+            # Store channel metadata
+            print(f"Storing channel metadata for {channel.name}")
+            result = db.channels.insert_one(channel.model_dump())
+            print(f"Channel inserted with ID: {result.inserted_id}")
+            
+            # Store messages in batches
+            if messages:
+                print(f"Storing {len(messages)} messages")
+                result = db.messages.insert_many([m.model_dump() for m in messages])
+                print(f"Inserted {len(result.inserted_ids)} messages")
+                total_messages += len(messages)
+            else:
+                print("No messages to store")
+            
+            # Update progress
+            percent = int(((i + 1) / total_files) * 100)
+            db.uploads.update_one(
+                {"_id": upload_id},
+                {"$set": {
+                    "progress": f"Importing channels... {percent}% ({total_messages} messages)",
+                    "progress_percent": percent,
+                    "stage_progress": percent,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            print(f"Updated progress: {percent}%")
+        except Exception as e:
+            print(f"Error processing {channel_file}: {e}")
+            # Log the error but continue with other files
+            db.failed_imports.insert_one({
+                "upload_id": upload_id,
+                "file": str(channel_file),
+                "error": str(e),
+                "timestamp": datetime.utcnow()
+            })
+    
+    # Update status to IMPORTED
+    try:
+        db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "IMPORTED",
+                "progress": f"Import complete: {total_messages} messages from {total_files} files",
+                "progress_percent": 100,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        print(f"Updated status to IMPORTED. Processed {total_files} files with {total_messages} messages.")
+    except Exception as e:
+        print(f"Error updating status to IMPORTED: {e}")
+    
+    print("=== IMPORT_SLACK_EXPORT_SYNC COMPLETED ===")
+
+@app.get("/admin/debug", response_class=HTMLResponse)
+async def debug_page(request: Request):
+    """Debug page to help diagnose UI issues"""
+    # Get a database connection
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[MONGO_DB]
+    
+    # Get all uploads
+    uploads = await db.uploads.find().to_list(length=100)
+    
+    # Convert ObjectId to string for JSON serialization
+    for upload in uploads:
+        upload["_id"] = str(upload["_id"])
+    
+    # Simplified debug page without template extraction
+    return templates.TemplateResponse(
+        "debug.html", 
+        {
+            "request": request, 
+            "uploads": uploads,
+            "uploads_json": json.dumps(uploads, indent=2),
+            "server_template": "Disabled for debugging",
+            "js_template": "Disabled for debugging"
+        }
+    )
