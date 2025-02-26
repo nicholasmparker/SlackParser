@@ -11,7 +11,7 @@ from datetime import datetime
 import logging
 from pydantic import BaseModel
 from app.embeddings import EmbeddingService
-from bson import ObjectId
+from bson import ObjectId, InvalidId
 from fastapi import status
 from werkzeug.utils import secure_filename
 import asyncio
@@ -259,51 +259,37 @@ async def view_conversation(
     page_size = 50
 
     # Get conversation metadata with display name
-    pipeline = [
-        {"$match": {"_id": conversation_id}},
-        {"$project": {
-            "_id": 1,
-            "name": {"$ifNull": ["$name", "$_id"]},
-            "type": 1,
-            "display_name": {
-                "$cond": {
-                    "if": {"$eq": ["$type", "dm"]},
-                    "then": {
-                        "$reduce": {
-                            "input": {
-                                "$map": {
-                                    "input": {"$split": [{"$ifNull": ["$name", "$_id"]}, "-"]},
-                                    "as": "name",
-                                    "in": {
-                                        "$cond": {
-                                            "if": {"$regexMatch": {"input": "$$name", "regex": "^U\\d+"}},
-                                            "then": {"$substrCP": ["$$name", 0, 2]},  # Just take U7 from U7WB86M7W
-                                            "else": "$$name"
-                                        }
-                                    }
-                                }
-                            },
-                            "initialValue": "",
-                            "in": {
-                                "$cond": {
-                                    "if": {"$eq": ["$$value", ""]},
-                                    "then": "$$this",
-                                    "else": {"$concat": ["$$value", ", ", "$$this"]}
-                                }
-                            }
-                        }
-                    },
-                    "else": {"$concat": ["#", {"$ifNull": ["$name", "$_id"]}]}
-                }
-            }
-        }}
-    ]
-    conversation = await app.db.conversations.aggregate(pipeline).next()
+    conversation = None
+    try:
+        # First try to parse as ObjectId
+        object_id = ObjectId(conversation_id)
+        conversation = await app.db.conversations.find_one({"_id": object_id})
+    except (InvalidId, TypeError):
+        # If not a valid ObjectId, try finding by channel_id
+        logging.debug(f"Conversation ID {conversation_id} is not a valid ObjectId")
+
+    if not conversation:
+        # Try finding by channel_id
+        conversation = await app.db.conversations.find_one({"channel_id": conversation_id})
+
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Use channel_id for querying messages
+    channel_id = conversation.get("channel_id", str(conversation["_id"]))
+
+    # Add display name
+    if conversation.get("type") == "dm":
+        name = conversation.get("name", str(conversation["_id"]))
+        parts = name.split("-")
+        display_name = ", ".join(parts)
+    else:
+        display_name = f"#{conversation.get('name', str(conversation['_id']))}"
+
+    conversation["display_name"] = display_name
+
     # Build query
-    query = {"conversation_id": conversation_id}
+    query = {"conversation_id": channel_id}
     if q:
         query["$text"] = {"$search": q}
 
@@ -408,6 +394,7 @@ async def conversations(
             "_id": 1,
             "name": {"$ifNull": ["$name", "$_id"]},  # Use _id as fallback if name is null
             "type": 1,
+            "channel_id": 1,  # Include channel_id for message lookup
             "display_name": {
                 "$cond": {
                     "if": {"$eq": ["$type", "dm"]},
@@ -435,9 +422,9 @@ async def conversations(
     conversations = await app.db.conversations.aggregate(pipeline).to_list(page_size)
 
     # Get message counts in bulk
-    conversation_ids = [c["_id"] for c in conversations]
+    channel_ids = [c.get("channel_id", str(c["_id"])) for c in conversations]
     message_counts = await app.db.messages.aggregate([
-        {"$match": {"conversation_id": {"$in": conversation_ids}}},
+        {"$match": {"conversation_id": {"$in": channel_ids}}},
         {"$group": {
             "_id": "$conversation_id",
             "count": {"$sum": 1},
@@ -452,7 +439,7 @@ async def conversations(
 
     # Merge data
     for conv in conversations:
-        conv_id = str(conv["_id"])
+        conv_id = str(conv.get("channel_id", conv["_id"]))
         if conv_id in message_data:
             data = message_data[conv_id]
             conv["message_count"] = data["count"]
@@ -1441,7 +1428,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                             msg_dict = msg.model_dump()
                             msg_dict["conversation_id"] = channel.id
                             message_docs.append(msg_dict)
-                        
+
                         await db.messages.insert_many(message_docs)
                         total_messages += len(messages)
 
@@ -1509,7 +1496,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                             msg_dict = msg.model_dump()
                             msg_dict["conversation_id"] = channel.id
                             message_docs.append(msg_dict)
-                        
+
                         await db.messages.insert_many(message_docs)
                         total_messages += len(messages)
 
@@ -1653,6 +1640,8 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
 
     # Process each channel file
     total_messages = 0
+    users = {}  # Track users across all files
+
     for i, channel_file in enumerate(channel_files):
         print(f"Processing file {i+1}/{total_files}: {channel_file}")
         try:
@@ -1692,12 +1681,26 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
                     msg_dict = msg.model_dump()
                     msg_dict["conversation_id"] = channel.id
                     message_docs.append(msg_dict)
-                
+
+                    # Track users
+                    if msg.username not in users:
+                        users[msg.username] = {
+                            "username": msg.username,
+                            "first_seen": msg.ts,
+                            "last_seen": msg.ts,
+                            "channels": {channel.id},
+                            "message_count": 1
+                        }
+                    else:
+                        user = users[msg.username]
+                        user["first_seen"] = min(user["first_seen"], msg.ts)
+                        user["last_seen"] = max(user["last_seen"], msg.ts)
+                        user["channels"].add(channel.id)
+                        user["message_count"] += 1
+
                 result = db.messages.insert_many(message_docs)
                 print(f"Inserted {len(result.inserted_ids)} messages")
                 total_messages += len(messages)
-            else:
-                print("No messages to store")
 
             # Update progress
             percent = int(((i + 1) / total_files) * 100)
@@ -1720,6 +1723,23 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
                 "error": str(e),
                 "timestamp": datetime.utcnow()
             })
+
+    # Insert/update users
+    for username, user in users.items():
+        db.users.update_one(
+            {"username": username},
+            {
+                "$set": {
+                    "username": username,
+                    "first_seen": user["first_seen"],
+                    "last_seen": user["last_seen"],
+                    "channels": list(user["channels"]),
+                    "message_count": user["message_count"]
+                }
+            },
+            upsert=True
+        )
+        print(f"User {username} inserted/updated")
 
     # Update status to IMPORTED
     try:
