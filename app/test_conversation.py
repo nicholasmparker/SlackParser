@@ -1,13 +1,14 @@
 """Test conversation view functionality"""
 import pytest
+import unittest
 from datetime import datetime
 from app.main import app
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
 @pytest.mark.asyncio
-class TestConversationView:
-    def setup_method(self):
+class TestConversationView(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
         self.client = TestClient(app)
 
         # Mock message data
@@ -52,7 +53,7 @@ class TestConversationView:
     async def test_view_conversation(self):
         # Setup mock aggregations
         mock_conversation_agg = AsyncMock()
-        mock_conversation_agg.next.return_value = self.test_conversation
+        mock_conversation_agg.__anext__.return_value = self.test_conversation
         app.db.conversations.aggregate.return_value = mock_conversation_agg
 
         mock_messages_agg = AsyncMock()

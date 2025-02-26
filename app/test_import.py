@@ -1,204 +1,51 @@
-"""
-IMPORTANT: This is a TEST ONLY script that:
-1. ONLY tests the import functionality
-2. Does NOT touch upload/extract code
-3. Does NOT modify the database
-4. Does NOT delete any files
-5. ONLY reads from an existing extract directory
-6. ONLY prints what would be imported
-
-Usage:
-python test_import.py /path/to/extract/dir
-
-The script will:
-1. Scan the directory structure
-2. Print channel/DM metadata it finds
-3. Print message counts and types
-4. NOT MODIFY ANYTHING
-"""
-
+"""Test import functionality"""
 import os
-import sys
 import re
 from pathlib import Path
 from datetime import datetime
-import asyncio
+import pytest
+from app.slack_parser import parse_message_line, parse_dm_metadata, parse_channel_metadata
 
-def parse_channel_metadata(lines: list[str]) -> dict:
-    """Parse channel metadata from header lines"""
-    metadata = {}
-    for line in lines:
-        if line.startswith("Channel Name: #"):
-            metadata["name"] = line.split("#")[1].strip()
-        elif line.startswith("Channel ID: "):
-            metadata["id"] = line.split(": ")[1].strip()
-        elif line.startswith("Created: "):
-            # Created: {YYYY-MM-DD HH:MM:SS} UTC by {username}
-            parts = line.split(" UTC by ")
-            if len(parts) == 2:
-                metadata["created_at"] = parts[0].split(": ")[1].strip()
-                metadata["created_by"] = parts[1].strip()
-        elif line.startswith("Type: "):
-            metadata["type"] = line.split(": ")[1].strip()
-        elif line.startswith("Topic: "):
-            # Topic: "{topic text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
-            match = re.match(r'Topic: "(.*)", set on (.*) UTC by (.*)', line)
-            if match:
-                metadata["topic"] = match.group(1)
-                metadata["topic_set_at"] = match.group(2)
-                metadata["topic_set_by"] = match.group(3)
-        elif line.startswith("Purpose: "):
-            # Purpose: "{purpose text}", set on {YYYY-MM-DD HH:MM:SS} UTC by {username}
-            match = re.match(r'Purpose: "(.*)", set on (.*) UTC by (.*)', line)
-            if match:
-                metadata["purpose"] = match.group(1)
-                metadata["purpose_set_at"] = match.group(2)
-                metadata["purpose_set_by"] = match.group(3)
-    return metadata
-
-def parse_dm_metadata(lines: list[str]) -> dict:
-    """Parse DM metadata from header lines"""
-    metadata = {}
-    for line in lines:
-        if line.startswith("Private conversation between "):
-            users = line.split("between ")[1].split(", ")
-            metadata["users"] = users
-        elif line.startswith("Channel ID: "):
-            metadata["id"] = line.split(": ")[1].strip()
-        elif line.startswith("Created: "):
-            # Created: {YYYY-MM-DD HH:MM:SS} UTC
-            metadata["created_at"] = line.split(": ")[1].split(" UTC")[0].strip()
-        elif line.startswith("Type: "):
-            metadata["type"] = line.split(": ")[1].strip()
-    return metadata
-
-def parse_timestamp(timestamp_str: str) -> datetime:
-    """Parse a timestamp string in any of the supported formats"""
-    formats = [
-        "%Y-%m-%d %H:%M:%S",  # 2023-07-11 21:17:07
-        "%I:%M %p",           # 12:26 PM
-        "%H:%M",              # 13:26
-    ]
-
-    for fmt in formats:
-        try:
-            return datetime.strptime(timestamp_str, fmt)
-        except ValueError:
-            continue
-
-    raise ValueError(f"Could not parse timestamp: {timestamp_str}")
-
-def parse_message_line(line: str) -> dict:
-    """Parse a message line into components according to ARCHITECTURE.md format"""
-    # Skip date separator lines
-    if line.startswith("----"):
-        return None
-
-    # All messages must start with timestamp
-    match = re.match(r'\[(.*?)(?:\s+UTC)?\] (.*)', line)
-    if not match:
-        return None
-
-    timestamp_str, content = match.groups()
-
-    try:
-        timestamp = parse_timestamp(timestamp_str)
-    except ValueError as e:
-        print(f"Warning: {str(e)}")
-        return None
-
-    # Regular message: [{timestamp} UTC] <{username}> {text}
-    regular_match = re.match(r'<([^>]+)> (.*)', content)
-    if regular_match:
-        username, text = regular_match.groups()
-        # Check for file share
-        if "shared a file:" in text:
-            return {
-                "timestamp": timestamp,
-                "username": username,
-                "text": text,
-                "type": "file_share",
-                "file_name": text.split("shared a file: ")[1]
-            }
-        # Check for edited flag
-        is_edited = text.endswith(" (edited)")
-        if is_edited:
-            text = text[:-9]  # Remove (edited)
-        return {
-            "timestamp": timestamp,
-            "username": username,
-            "text": text,
-            "type": "message",
-            "is_edited": is_edited
-        }
-
-    # Join message: [{timestamp} UTC] {username} joined the channel
-    join_match = re.match(r'(.*?) joined the channel', content)
-    if join_match:
-        username = join_match.group(1)
-        return {
-            "timestamp": timestamp,
-            "username": username,
-            "text": content,
-            "type": "join"
-        }
-
-    # Archive message: [{timestamp} UTC] (channel_archive) <{username}> {json}
-    archive_match = re.match(r'\(channel_archive\) <([^>]+)> (.*)', content)
-    if archive_match:
-        username, text = archive_match.groups()
-        return {
-            "timestamp": timestamp,
-            "username": username,
-            "text": text,
-            "type": "archive"
-        }
-
-    # System message: [{timestamp} UTC] {text}
-    return {
-        "timestamp": timestamp,
-        "text": content,
-        "type": "system"
-    }
-
-async def test_import_channel_or_dm(dir_path: Path) -> tuple[int, list[str]]:
-    """
-    TEST ONLY function that reads a channel/DM directory and prints what it would import
-    Does NOT modify database or files
-    """
+@pytest.mark.asyncio
+async def test_import_channel_or_dm(tmp_path: Path) -> tuple[int, list[str]]:
+    """Test parsing a channel file"""
     messages = 0
     errors = []
 
+    # Create test channel file
+    channel_file = tmp_path / "test_channel.txt"
+    channel_file.write_text("""Channel Name: #general
+Channel ID: C123456
+Created: 2024-02-25 12:00:00 UTC by testuser
+Type: Channel
+Topic: "Test topic", set on 2024-02-25 12:00:00 UTC by testuser
+Purpose: "Test purpose", set on 2024-02-25 12:00:00 UTC by testuser
+
+#################################################################
+
+Messages:
+
+---- 2024-02-25 ----
+[2024-02-25 12:00:00 UTC] <testuser> Test message 1
+[2024-02-25 12:01:00 UTC] <testuser> Test message 2
+[2024-02-25 12:02:00 UTC] testuser joined the channel""")
+
     try:
-        # Look for main message file with same name as directory
-        message_file = dir_path / f"{dir_path.name}.txt"
-        if not message_file.exists():
-            print(f"No message file found at {message_file}")
-            return messages, errors
+        # Parse the file
+        lines = channel_file.read_text().splitlines()
 
-        # Read and parse the file
-        print(f"\nReading {message_file.name}...")
-        with open(message_file) as f:
-            lines = f.readlines()
+        # Find separator
+        separator_idx = lines.index("#################################################################")
 
-        # Find the separator line
-        try:
-            separator_idx = lines.index("#################################################################\n")
-        except ValueError:
-            print(f"WARNING: No separator line found in {message_file}")
-            return messages, errors
-
-        # Parse metadata from header
+        # Parse metadata
         header_lines = lines[:separator_idx]
-        if "Direct Message" in "".join(header_lines):
-            metadata = parse_dm_metadata(header_lines)
-        else:
-            metadata = parse_channel_metadata(header_lines)
+        metadata = parse_channel_metadata(header_lines)
+        if metadata["name"] != "general":
+            errors.append(f"Expected channel name 'general', got '{metadata['name']}'")
+        if metadata["id"] != "C123456":
+            errors.append(f"Expected channel ID 'C123456', got '{metadata['id']}'")
 
-        print("\nMetadata:")
-        print(metadata)
-
-        # Parse messages after "Messages:" line
+        # Parse messages
         message_types = {}
         in_messages = False
         for line in lines[separator_idx:]:
@@ -213,88 +60,34 @@ async def test_import_channel_or_dm(dir_path: Path) -> tuple[int, list[str]]:
             if not in_messages:
                 continue
 
+            if line.startswith("----"):
+                continue
+
             message = parse_message_line(line)
             if message:
                 messages += 1
                 msg_type = message["type"]
                 message_types[msg_type] = message_types.get(msg_type, 0) + 1
 
-        print(f"\nMessage type counts for {dir_path.name}:")
-        print(message_types)
+        # Verify message counts
+        if messages != 3:
+            errors.append(f"Expected 3 messages, got {messages}")
+        if message_types.get("message", 0) != 2:
+            errors.append(f"Expected 2 regular messages, got {message_types.get('message', 0)}")
+        if message_types.get("join", 0) != 1:
+            errors.append(f"Expected 1 join message, got {message_types.get('join', 0)}")
 
     except Exception as e:
-        error = f"Error processing {dir_path}: {str(e)}"
+        error = f"Error parsing {channel_file}: {str(e)}"
         errors.append(error)
-        print(f"ERROR: {error}")
 
     return messages, errors
 
-async def test_import(extract_dir: Path):
-    """
-    TEST ONLY function that simulates the import process
-    Does NOT modify database or files
-    """
-    print(f"Testing import from: {extract_dir}")
-
-    # Find slack export directory
-    subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
-    if not subdirs:
-        print("ERROR: No subdirectories found")
-        return
-
-    slack_dir = subdirs[0]
-    channels_dir = slack_dir / 'channels'
-    dms_dir = slack_dir / 'dms'
-
-    if not channels_dir.exists() and not dms_dir.exists():
-        print("ERROR: No channels or DMs directory found")
-        return
-
-    total_messages = 0
-    total_errors = []
-
-    # Test channels
-    if channels_dir.exists():
-        channel_dirs = [d for d in channels_dir.iterdir() if d.is_dir()]
-        print(f"\nFound {len(channel_dirs)} channels")
-
-        # Test more channels
-        for channel_dir in list(channel_dirs)[:20]:
-            print(f"\nProcessing channel: {channel_dir.name}")
-            messages, errors = await test_import_channel_or_dm(channel_dir)
-            total_messages += messages
-            total_errors.extend(errors)
-
-    # Test DMs
-    if dms_dir.exists():
-        dm_dirs = [d for d in dms_dir.iterdir() if d.is_dir()]
-        print(f"\nFound {len(dm_dirs)} DMs")
-
-        # Test more DMs
-        for dm_dir in list(dm_dirs)[:20]:
-            print(f"\nProcessing DM: {dm_dir.name}")
-            messages, errors = await test_import_channel_or_dm(dm_dir)
-            total_messages += messages
-            total_errors.extend(errors)
-
-    print(f"\nFinal Summary:")
-    print(f"Total messages that would be imported: {total_messages}")
-    if total_errors:
-        print(f"\nTotal errors: {len(total_errors)}")
-        print("Error list:")
-        for error in total_errors:
-            print(f"- {error}")
-    else:
-        print("\nNo errors encountered")
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python test_import.py /path/to/extract/dir")
-        sys.exit(1)
-
-    extract_dir = Path(sys.argv[1])
-    if not extract_dir.exists():
-        print(f"Error: Directory does not exist: {extract_dir}")
-        sys.exit(1)
-
-    asyncio.run(test_import(extract_dir))
+@pytest.mark.asyncio
+async def test_import(tmp_path: Path):
+    """Test the full import process"""
+    messages, errors = await test_import_channel_or_dm(tmp_path)
+    if messages != 3:
+        pytest.fail(f"Expected 3 messages, got {messages}")
+    if errors:
+        pytest.fail(f"Encountered errors: {errors}")

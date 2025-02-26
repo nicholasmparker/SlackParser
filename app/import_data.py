@@ -592,22 +592,24 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
         # Create extract directory
         extract_dir.mkdir(parents=True, exist_ok=True)
 
-        # Extract the ZIP file
-        await extract_with_progress(db, str(file_path), extract_dir, upload_id)
-
-        # Get list of subdirectories
+        # Check if files are already extracted
         subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
         if not subdirs:
-            error_msg = f"No subdirectories found in {extract_dir}"
-            await db.uploads.update_one(
-                {"_id": ObjectId(upload_id)},
-                {"$set": {
-                    "status": "ERROR",
-                    "error": f"Error during import: {error_msg}",
-                    "updated_at": datetime.utcnow()
-                }}
-            )
-            return 0, [error_msg]
+            # Extract the ZIP file
+            await extract_with_progress(db, str(file_path), extract_dir, upload_id)
+            # Recheck subdirs after extraction
+            subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+            if not subdirs:
+                error_msg = f"No subdirectories found in {extract_dir}"
+                await db.uploads.update_one(
+                    {"_id": ObjectId(upload_id)},
+                    {"$set": {
+                        "status": "ERROR",
+                        "error": f"Error during import: {error_msg}",
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
+                return 0, [error_msg]
 
         slack_dir = subdirs[0]
         channels_dir = slack_dir / 'channels'

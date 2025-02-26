@@ -334,3 +334,26 @@ Note: Both `username` and `user_name` fields contain the same value, but are use
    - Update upload status with error details
    - Log errors for debugging
    - Record failed imports in database for retry
+
+## Import Status Flow
+
+1. File Upload:
+   - `UPLOADING` -> File is being uploaded in chunks
+   - `UPLOADED` -> File upload is complete
+
+2. Import Process:
+   - `VALIDATING` -> Checking file format and structure
+   - `EXTRACTING` -> Extracting ZIP file contents
+   - `IMPORTING` -> Processing and importing messages
+   - `TRAINING` -> Training embeddings for search
+   - `COMPLETED` -> Import successfully finished
+
+3. Error States:
+   - `ERROR` -> An error occurred during any step
+   - `cancelled` -> Import was manually cancelled
+   - `FAILED` -> Legacy error state, same as ERROR
+
+4. Restart Rules:
+   - Can restart from `ERROR`, `cancelled`, or `UPLOADED` states
+   - If files were already extracted, skips extraction step
+   - Otherwise starts from the beginning

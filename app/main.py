@@ -1222,9 +1222,9 @@ async def restart_import(upload_id: str):
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
 
-        # Only allow restarting failed or uploaded imports
-        if upload["status"] not in ["ERROR", "UPLOADED"]:
-            raise HTTPException(status_code=400, detail="Can only restart failed or uploaded imports")
+        # Only allow restarting failed, cancelled, or uploaded imports
+        if upload["status"] not in ["ERROR", "cancelled", "UPLOADED"]:
+            raise HTTPException(status_code=400, detail="Can only restart failed, cancelled, or uploaded imports")
 
         # Start the import
         file_path = Path(upload["file_path"])
