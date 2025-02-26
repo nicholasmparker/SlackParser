@@ -21,6 +21,7 @@ from app.db.models import Channel, Message, Upload, FailedImport
 from app.importer.importer import process_file, import_slack_export
 from app.importer.parser import parse_message, parse_channel_metadata, parse_dm_metadata, ParserError
 import glob
+import zipfile
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -172,6 +173,43 @@ async def setup_indexes():
         print("Created database indexes")
     except Exception as e:
         print(f"Error creating indexes: {e}")
+
+def get_zip_total_size(zip_path: str) -> int:
+    """Get the total uncompressed size of all files in the ZIP"""
+    print(f"Calculating total size of {zip_path}")
+    total = 0
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for info in zip_ref.infolist():
+            total += info.file_size
+    print(f"Total size: {total} bytes")
+    return total
+
+async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, upload_id: ObjectId):
+    """Extract ZIP file with progress updates"""
+    print(f"Starting extraction with progress from {zip_path} to {extract_dir}")
+    total_size = get_zip_total_size(zip_path)
+    extracted_size = 0
+
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            print(f"Extracting {file_info.filename}")
+            zip_ref.extract(file_info, extract_dir)
+            extracted_size += file_info.file_size
+            percent = int((extracted_size / total_size) * 100)
+
+            # Update progress every 5%
+            if percent % 5 == 0:
+                print(f"Progress: {percent}%")
+                await db.uploads.update_one(
+                    {"_id": upload_id},
+                    {"$set": {
+                        "status": "EXTRACTING",
+                        "progress": f"Extracting ZIP file... {percent}% complete",
+                        "progress_percent": percent,
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
+    print("Extraction complete")
 
 @app.get("/")
 async def home(request: Request):
@@ -590,109 +628,100 @@ async def admin_page(request: Request):
         }
     )
 
-@app.post("/admin/import/{upload_id}")
-async def start_import(request: Request, upload_id: str):
-    """Start importing a previously uploaded file"""
+@app.post("/admin/import/{upload_id}/start")
+async def start_import(upload_id: str, request: Request):
+    """Start importing a Slack export."""
+    print(f"\n=== Starting import for {upload_id} ===")
     try:
+        # Get database
         db = request.app.db
+
+        # Convert upload_id to ObjectId
         upload_id = ObjectId(upload_id)
+        print(f"Looking up upload {upload_id}")
+
+        # Get upload
         upload = await db.uploads.find_one({"_id": upload_id})
-
         if not upload:
-            return RedirectResponse(
-                url=f"/admin?error=upload_not_found",
-                status_code=303
-            )
+            print(f"Upload {upload_id} not found!")
+            raise HTTPException(status_code=404, detail="Upload not found")
 
-        # Only allow starting import if file is in a valid state
-        valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING", "extracting"]
-        if upload["status"] not in valid_states:
-            return RedirectResponse(
-                url=f"/admin?error=invalid_state&message=Cannot start import for file in state: {upload['status']}",
-                status_code=303
-            )
+        print(f"Found upload: {upload}")
 
-        # Allow reimport if previous import had 0 messages or failed
-        if upload["status"] == "complete":
-            if upload.get("progress") and "Imported 0" not in upload["progress"]:
-                return RedirectResponse(
-                    url=f"/admin?error=already_imported",
-                    status_code=303
-                )
+        # Create extract directory
+        extract_path = Path("/data/extracts") / str(upload_id)
+        print(f"Creating extract directory: {extract_path}")
+        extract_path.mkdir(parents=True, exist_ok=True)
 
-        # Reset import state
+        # Update status to extracting
+        print("Updating status to EXTRACTING")
+        await db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "EXTRACTING",
+                "progress": "Starting extraction...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+
+        print(f"Starting extraction from {upload['file_path']}")
+        # Extract zip file
+        await extract_with_progress(db, str(upload["file_path"]), extract_path, upload_id)
+
+        print("Extraction complete, updating status to IMPORTING")
+        # Update status back to importing
         await db.uploads.update_one(
             {"_id": upload_id},
             {"$set": {
                 "status": "IMPORTING",
-                "error": None,
                 "progress": "Starting import...",
                 "progress_percent": 0,
                 "updated_at": datetime.utcnow()
             }}
         )
 
-        # Get extract path
-        extract_path = Path("/data/extracts") / str(upload_id)
-
+        print("Starting import task")
         # Start import in background
         task = asyncio.create_task(
             import_slack_export(db, extract_path, upload_id)
         )
 
-        # Add error handling for the background task
-        def handle_import_completion(task):
-            try:
-                task.result()  # This will raise any exceptions from the task
-            except Exception as e:
-                logger.exception("Import failed")
-                asyncio.create_task(
-                    db.uploads.update_one(
-                        {"_id": upload_id},
-                        {"$set": {
-                            "status": "error",
-                            "error": str(e),
-                            "updated_at": datetime.utcnow()
-                        }}
-                    )
-                )
-
-        task.add_done_callback(handle_import_completion)
-
-        return RedirectResponse(
-            url=f"/admin?success=import_started",
-            status_code=303
-        )
+        print("=== Import started successfully ===\n")
+        return {"status": "ok"}
 
     except Exception as e:
+        print(f"Error starting import: {str(e)}")
         logger.exception("Error starting import")
-        return RedirectResponse(
-            url=f"/admin?error=import_failed&message={str(e)}",
-            status_code=303
-        )
+        raise
 
 @app.get("/admin/import/{upload_id}/status")
-async def get_import_status(upload_id: str):
+async def get_import_status(upload_id: str, request: Request):
     """Get the status of an import"""
-    try:
-        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
-        if not upload:
-            raise HTTPException(status_code=404, detail="Upload not found")
+    # Get database
+    db = request.app.db
 
-        return {
-            "status": upload.get("status", "unknown"),
-            "progress": upload.get("progress", ""),
-            "error": upload.get("error", "")
-        }
-    except Exception as e:
-        logger.error(f"Error getting import status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Convert upload_id to ObjectId
+    upload_id = ObjectId(upload_id)
+
+    # Get upload
+    upload = await db.uploads.find_one({"_id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    # Return status
+    return {
+        "status": upload["status"],
+        "progress": upload.get("progress"),
+        "progress_percent": upload.get("progress_percent", 0),
+        "error": upload.get("error")
+    }
 
 @app.post("/admin/import/{upload_id}/cancel")
 async def cancel_import(request: Request, upload_id: str):
     """Cancel a stuck import"""
     try:
-        db = request.app.db
+        db = app.db
         upload_id = ObjectId(upload_id)
         upload = await db.uploads.find_one({"_id": upload_id})
 
@@ -737,7 +766,7 @@ async def cancel_import(request: Request, upload_id: str):
 async def get_failed_messages(request: Request, upload_id: str):
     """Get failed message parses for an import"""
     try:
-        db = request.app.db
+        db = app.db
         upload_id = ObjectId(upload_id)
 
         # Get the failed messages

@@ -94,11 +94,15 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
         upload_id: ID of upload
     """
     try:
+        print(f"Starting import from {extract_path}")
+
         # Process all txt files
         txt_files = list(extract_path.rglob("*.txt"))
         total_files = len(txt_files)
         processed_files = 0
         total_messages = 0
+
+        print(f"Found {total_files} txt files")
 
         for txt_file in txt_files:
             # Skip non-message files
@@ -110,22 +114,29 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 continue
 
             try:
+                print(f"Processing {txt_file}")
+                # Process file and store messages
                 channel, messages = await process_file(db, txt_file, upload_id)
 
                 # Store channel metadata
+                print(f"Storing channel metadata for {channel.name}")
                 await db.channels.insert_one(channel.model_dump())
 
                 # Store messages in batches
                 if messages:
+                    print(f"Storing {len(messages)} messages")
                     await db.messages.insert_many([m.model_dump() for m in messages])
                     total_messages += len(messages)
 
                 # Update progress
                 processed_files += 1
                 progress_percent = int((processed_files / total_files) * 100)
+
+                print(f"Progress: {progress_percent}% ({processed_files}/{total_files} files, {total_messages} messages)")
                 await db.uploads.update_one(
                     {"_id": upload_id},
                     {"$set": {
+                        "status": "IMPORTING",
                         "progress": f"Processed {processed_files}/{total_files} files ({total_messages} messages)",
                         "progress_percent": progress_percent,
                         "updated_at": datetime.utcnow()
@@ -133,28 +144,25 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 )
 
             except ImportError as e:
+                print(f"Error importing {txt_file}: {e}")
                 # Log error but continue processing other files
-                logger.error(str(e))
-                await db.failed_imports.insert_one({
-                    "file": str(txt_file),
-                    "error": str(e),
-                    "upload_id": upload_id,
-                    "timestamp": datetime.utcnow()
-                })
+                continue
 
-        # Update upload status to complete
+        # Update status to complete
+        print("Import complete!")
         await db.uploads.update_one(
             {"_id": upload_id},
             {"$set": {
                 "status": "COMPLETE",
-                "progress": "Import complete",
+                "progress": f"Import complete: {total_messages} messages from {total_files} files",
                 "progress_percent": 100,
                 "updated_at": datetime.utcnow()
             }}
         )
 
     except Exception as e:
-        # Update upload status to error
+        print(f"Error during import: {e}")
+        # Update status to error
         await db.uploads.update_one(
             {"_id": upload_id},
             {"$set": {
@@ -163,7 +171,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 "updated_at": datetime.utcnow()
             }}
         )
-        raise ImportError(f"Error importing from directory {extract_path}: {str(e)}")
+        raise
 
 async def import_slack_export_from_folder(db, extract_path: Path, upload_id: ObjectId) -> None:
     """Import a Slack export from the given path.

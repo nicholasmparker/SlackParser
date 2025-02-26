@@ -77,9 +77,14 @@
                                 <div class="space-y-2">
                                     <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
                                     {% if upload.progress_percent is not none %}
-                                        <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
-                                            <div class="bg-[#1264a3] h-full transition-all duration-200"
-                                                 style="width: {{ upload.progress_percent }}%"></div>
+                                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                                            <div id="progress-{{ upload._id }}"
+                                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                                 style="width: {{ upload.progress_percent }}%">
+                                            </div>
+                                        </div>
+                                        <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-300 mt-1">
+                                            {{ upload.progress }}
                                         </div>
                                     {% endif %}
                                 </div>
@@ -91,9 +96,14 @@
                                 <div class="space-y-2">
                                     <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Importing</span>
                                     {% if upload.progress_percent is not none %}
-                                        <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
-                                            <div class="bg-[#1264a3] h-full transition-all duration-200"
-                                                 style="width: {{ upload.progress_percent }}%"></div>
+                                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                                            <div id="progress-{{ upload._id }}"
+                                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                                 style="width: {{ upload.progress_percent }}%">
+                                            </div>
+                                        </div>
+                                        <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-300 mt-1">
+                                            {{ upload.progress }}
                                         </div>
                                     {% endif %}
                                 </div>
@@ -130,13 +140,10 @@
                         <td class="py-3 text-gray-100">{{ upload.size | filesizeformat }}</td>
                         <td class="py-3 text-gray-100">{{ upload.created_at | strftime }}</td>
                         <td class="py-3 text-right space-x-2">
-                            {% if upload.status == "UPLOADED" %}
-                                <form method="post" action="/admin/import/{{ upload._id }}" class="inline">
-                                    <button type="submit"
-                                            class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
-                                        Start Import
-                                    </button>
-                                </form>
+                            {% if upload.status in ["UPLOADED", "ERROR"] %}
+                            <button class="btn btn-primary" onclick="startImport('{{ upload._id }}')">
+                                Start Import
+                            </button>
                             {% elif upload.status == "IMPORTING" %}
                                 <form method="post" action="/admin/import/{{ upload._id }}/cancel" class="inline">
                                     <button type="submit"
@@ -448,6 +455,53 @@ function restartImport(uploadId) {
         // Always reload after a short delay to let the import start
         setTimeout(() => window.location.reload(), 1000);
     });
+}
+
+function startImport(uploadId) {
+    fetch(`/admin/import/${uploadId}/start`, {
+        method: 'POST'
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Failed to start import');
+        }
+        return response.json();
+    })
+    .then(data => {
+        // Start polling for progress
+        pollProgress(uploadId);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to start import: ' + error.message);
+    });
+}
+
+function pollProgress(uploadId) {
+    const interval = setInterval(() => {
+        fetch(`/admin/import/${uploadId}/status`)
+        .then(response => response.json())
+        .then(data => {
+            // Find the progress bar for this upload
+            const progressBar = document.querySelector(`#progress-${uploadId}`);
+            const progressText = document.querySelector(`#progress-text-${uploadId}`);
+
+            if (progressBar && progressText) {
+                progressBar.style.width = `${data.progress_percent}%`;
+                progressText.textContent = data.progress || '';
+            }
+
+            // Stop polling if complete or error
+            if (data.status === 'COMPLETE' || data.status === 'ERROR') {
+                clearInterval(interval);
+                window.location.reload();
+            }
+        })
+        .catch(error => {
+            console.error('Error polling progress:', error);
+            clearInterval(interval);
+        });
+    }, 1000); // Poll every second
 }
 </script>
 {% endblock %}
