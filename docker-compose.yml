@@ -4,7 +4,7 @@ services:
   web:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - MONGO_URL=mongodb://mongodb:27017
       - MONGO_DB=${MONGO_DB:-slack_data}
@@ -47,21 +47,21 @@ services:
           memory: 1G
 
   chroma:
-    image: ghcr.io/chroma-core/chroma:latest
+    image: chromadb/chroma:0.5.18
     volumes:
       - chroma_data:/chroma/chroma
     ports:
-      - "6001:8000"
+      - "8000:8000"
     environment:
       - ALLOW_RESET=true
       - ANONYMIZED_TELEMETRY=false
       - IS_PERSISTENT=true
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://0.0.0.0:8000/api/v1/heartbeat"]
+      test: curl -f http://localhost:8000/api/v1/heartbeat || exit 1
       interval: 10s
-      timeout: 10s
       retries: 10
       start_period: 30s
+      timeout: 10s
     deploy:
       resources:
         limits:

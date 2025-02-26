@@ -17,13 +17,14 @@ import asyncio
 import shutil
 import json
 import aiohttp
+from app.db.models import Channel, Message, Upload, FailedImport
+from app.importer.importer import process_file, import_slack_export
+from app.importer.parser import parse_message, parse_channel_metadata, parse_dm_metadata, ParserError
+import glob
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Import our data module
-from app import import_data
 
 app = FastAPI()
 
@@ -631,10 +632,12 @@ async def start_import(request: Request, upload_id: str):
             }}
         )
 
+        # Get extract path
+        extract_path = Path("/data/extracts") / str(upload_id)
+
         # Start import in background
-        print(f"Creating background task for import of {upload['filename']}")
         task = asyncio.create_task(
-            import_data.import_slack_export(db, Path(upload["file_path"]), str(upload_id))
+            import_slack_export(db, extract_path, upload_id)
         )
 
         # Add error handling for the background task
@@ -800,7 +803,7 @@ async def import_new_messages(request: Request):
     """Import new messages from Slack export"""
     try:
         # Import new messages
-        new_messages = await import_data.import_new_messages()
+        new_messages = await import_slack_export(app.db, Path(DATA_DIR) / "new_messages.zip", "new_messages")
 
         # Record import status
         await app.db.import_status.insert_one({
@@ -1243,9 +1246,12 @@ async def restart_import(upload_id: str):
             }}
         )
 
+        # Get extract path
+        extract_path = Path("/data/extracts") / str(upload_id)
+
         # Start import in background
         task = asyncio.create_task(
-            import_data.import_slack_export(app.db, file_path, upload_id)
+            import_slack_export(app.db, extract_path, upload_id)
         )
 
         # Add error handling for the background task
@@ -1272,3 +1278,56 @@ async def restart_import(upload_id: str):
     except Exception as e:
         logger.error(f"Error restarting import: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload_id: str) -> None:
+    """Import a Slack export file"""
+    try:
+        # Process channel files
+        channels_dir = extract_path / "channels"
+        if channels_dir.exists():
+            for file_path in channels_dir.rglob("*.txt"):
+                try:
+                    channel, messages = await process_file(db, file_path, upload_id)
+
+                    # Store channel metadata
+                    await db.channels.insert_one(channel.model_dump())
+
+                    # Store messages in batches
+                    if messages:
+                        await db.messages.insert_many([m.model_dump() for m in messages])
+
+                except Exception as e:
+                    logger.error(f"Error importing {file_path}: {str(e)}")
+                    await db.failed_imports.insert_one({
+                        "file": str(file_path),
+                        "error": str(e),
+                        "upload_id": upload_id,
+                        "timestamp": datetime.utcnow()
+                    })
+
+        # Process DM files
+        dms_dir = extract_path / "dms"
+        if dms_dir.exists():
+            for file_path in dms_dir.rglob("*.txt"):
+                try:
+                    channel, messages = await process_file(db, file_path, upload_id)
+
+                    # Store channel metadata
+                    await db.channels.insert_one(channel.model_dump())
+
+                    # Store messages in batches
+                    if messages:
+                        await db.messages.insert_many([m.model_dump() for m in messages])
+
+                except Exception as e:
+                    logger.error(f"Error importing {file_path}: {str(e)}")
+                    await db.failed_imports.insert_one({
+                        "file": str(file_path),
+                        "error": str(e),
+                        "upload_id": upload_id,
+                        "timestamp": datetime.utcnow()
+                    })
+
+    except Exception as e:
+        logger.error(f"Error importing from {extract_path}: {str(e)}")
+        raise

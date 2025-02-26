@@ -22,22 +22,22 @@
     <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700 transition-all hover:border-gray-600">
         <h3 class="text-lg font-medium text-gray-100 mb-2">Upload Slack Export</h3>
         <p class="text-gray-400 mb-4">Upload your Slack export ZIP file here. The file will be processed and indexed for searching.</p>
-        
+
         <form id="uploadForm" method="post" action="/admin/upload" enctype="multipart/form-data" class="space-y-4">
             <div class="flex gap-2">
-                <input type="file" 
-                       class="flex-1 bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] transition-colors" 
-                       id="file" 
-                       name="file" 
+                <input type="file"
+                       class="flex-1 bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] transition-colors"
+                       id="file"
+                       name="file"
                        accept=".zip">
-                <button type="submit" 
-                        id="uploadButton" 
+                <button type="submit"
+                        id="uploadButton"
                         class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-4 py-2 rounded transition-colors">
                     Upload
                 </button>
             </div>
         </form>
-        
+
         <div id="uploadProgress" class="hidden mt-4">
             <div class="flex justify-between items-center mb-2">
                 <div id="uploadStatus" class="text-[#1264a3]">Uploading...</div>
@@ -111,9 +111,9 @@
                                 <div class="space-y-2">
                                     <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Import Complete</span>
                                 </div>
-                            {% elif upload.status == "ERROR" %}
+                            {% elif upload.status == "ERROR" or upload.status == "cancelled" %}
                                 <div class="space-y-2">
-                                    <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Error</span>
+                                    <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">{{ upload.status | title }}</span>
                                     {% if upload.error %}
                                         <div class="text-red-400 text-xs mt-1">{{ upload.error }}</div>
                                     {% endif %}
@@ -132,7 +132,7 @@
                         <td class="py-3 text-right space-x-2">
                             {% if upload.status == "UPLOADED" %}
                                 <form method="post" action="/admin/import/{{ upload._id }}" class="inline">
-                                    <button type="submit" 
+                                    <button type="submit"
                                             class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
                                         Start Import
                                     </button>
@@ -171,7 +171,7 @@
     <div class="bg-[#222529] rounded-lg p-6 border border-gray-700 transition-all hover:border-gray-600">
         <h3 class="text-lg font-medium text-gray-100 mb-2">Clear Data</h3>
         <p class="text-gray-400 mb-4">Select which data you want to clear from the system.</p>
-        
+
         <form action="/admin/clear" method="post" class="space-y-4">
             <div class="space-y-2">
                 <label class="flex items-center gap-2 text-gray-100 hover:text-white transition-colors">
@@ -187,10 +187,10 @@
                     Clear search embeddings
                 </label>
             </div>
-            
-            <button type="submit" 
-                    id="clearButton" 
-                    class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed" 
+
+            <button type="submit"
+                    id="clearButton"
+                    class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled>
                 Clear Selected Data
             </button>
@@ -213,7 +213,7 @@
  */
 document.getElementById('uploadForm').addEventListener('submit', function(e) {
     e.preventDefault();
-    
+
     // Get the file from the input
     // CRITICAL: This must stay as getElementById, do not "improve" to querySelector
     const fileInput = document.getElementById('file');
@@ -232,7 +232,7 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     const uploadStatus = document.getElementById('uploadStatus');
     const uploadedSize = document.getElementById('uploadedSize');
     const totalSize = document.getElementById('totalSize');
-    
+
     // Show progress UI and disable upload button
     uploadProgress.classList.remove('hidden');
     uploadButton.disabled = true;
@@ -243,7 +243,7 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     // Do not "improve" to fetch() - it doesn't support progress tracking
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/admin/upload');
-    
+
     // Track upload progress
     // This event fires repeatedly as chunks are uploaded
     xhr.upload.onprogress = function(e) {
@@ -309,16 +309,16 @@ document.addEventListener('DOMContentLoaded', function() {
             const uploadId = e.target.dataset.uploadId;
             const row = document.querySelector(`tr[data-upload-id="${uploadId}"]`);
             const statusCell = row.querySelector('td:nth-child(2)');
-            
+
             // Disable button and show loading state
             e.target.disabled = true;
             e.target.textContent = 'Training...';
-            
+
             try {
                 const response = await fetch(`/admin/train/${uploadId}`, {
                     method: 'POST'
                 });
-                
+
                 if (response.ok) {
                     // Update status cell to show progress
                     statusCell.innerHTML = `
@@ -330,10 +330,10 @@ document.addEventListener('DOMContentLoaded', function() {
                             <small class="text-gray-400 text-xs block mt-1">0% complete</small>
                         </div>
                     `;
-                    
+
                     // Remove the train button
                     e.target.remove();
-                    
+
                     // Start polling for progress
                     pollTrainingStatus(uploadId);
                 } else {
@@ -353,21 +353,21 @@ document.addEventListener('DOMContentLoaded', function() {
 async function pollTrainingStatus(uploadId) {
     const row = document.querySelector(`tr[data-upload-id="${uploadId}"]`);
     const statusCell = row.querySelector('td:nth-child(2)');
-    
+
     try {
         const response = await fetch(`/admin/training-status/${uploadId}`);
         const data = await response.json();
-        
+
         if (data.status === 'running') {
             // Update progress bar
             const progressBar = statusCell.querySelector('.bg-[#1264a3]');
             const progressText = statusCell.querySelector('small');
-            
+
             if (progressBar && progressText) {
                 progressBar.style.width = `${data.progress}%`;
                 progressText.textContent = `${data.progress}% complete`;
             }
-            
+
             // Continue polling
             setTimeout(() => pollTrainingStatus(uploadId), 1000);
         } else if (data.status === 'completed') {
@@ -380,7 +380,7 @@ async function pollTrainingStatus(uploadId) {
             statusCell.innerHTML = `
                 <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Training Failed</span>
             `;
-            
+
             const actionsCell = row.querySelector('td:last-child');
             actionsCell.innerHTML = `
                 <div class="flex justify-end gap-2">
@@ -414,7 +414,7 @@ function cancelImport(uploadId) {
     if (!confirm('Are you sure you want to cancel this import?')) {
         return;
     }
-    
+
     fetch(`/admin/import/${uploadId}/cancel`, {
         method: 'POST'
     })
@@ -436,8 +436,8 @@ function restartImport(uploadId) {
     if (!confirm('Are you sure you want to restart this import?')) {
         return;
     }
-    
-    fetch(`/admin/import/${uploadId}`, {
+
+    fetch(`/api/restart_import/${uploadId}`, {
         method: 'POST'
     })
     .then(response => response.json())

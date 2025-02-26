@@ -33,7 +33,9 @@ ENV/
 *.swo
 
 # Project specific
-data/*
+data/extracts/
+data/uploads/
+data/test_export.zip
 !data/.gitkeep
 file_storage/*
 !file_storage/.gitkeep

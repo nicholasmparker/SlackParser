@@ -205,6 +205,21 @@ docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndex
      [{YYYY-MM-DD HH:MM:SS} UTC] <{username}> {message text}
      ```
 
+   - Multi-Party DM File Format (.txt):
+     ```
+     Private conversation between {user1}, {user2}, {user3}, ...
+     Channel ID: {C...}
+     Created: {YYYY-MM-DD HH:MM:SS} UTC
+     Type: Multi-Party Direct Message
+
+     #################################################################
+
+     Messages:
+
+     ---- {YYYY-MM-DD} ----
+     [{YYYY-MM-DD HH:MM:SS} UTC] <{username}> {message text}
+     ```
+
    - Message Variations:
      1. Regular message: `[timestamp] <username> message text`
      2. System message: `[timestamp] username joined/left/etc`
@@ -226,20 +241,103 @@ docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndex
 
 ## Message Formats
 
-### Timestamps
-Messages can have timestamps in multiple formats:
-1. Full timestamp: `[YYYY-MM-DD HH:MM:SS UTC]` (e.g. `[2023-07-11 21:17:07 UTC]`)
-2. 12-hour time: `[HH:MM AM/PM]` (e.g. `[12:26 PM]`)
-3. 24-hour time: `[HH:MM]` (e.g. `[13:26]`)
-
-All timestamps are stored in MongoDB as UTC datetime objects.
-
 ### Message Types
-1. Regular message: `[{timestamp} UTC] <{username}> {message text}`
-2. Join message: `[{timestamp} UTC] {username} joined the channel`
-3. Archive message: `[{timestamp} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}`
-4. File share message: `[{timestamp} UTC] <{username}> shared a file: {file_name}`
-5. System message: `[{timestamp} UTC] {system message text}`
+
+Messages in Slack exports can be of several types:
+
+1. Regular message:
+   ```
+   [{timestamp}] <{username}> {message text}
+   ```
+   Example: `[2023-06-22 15:56:54 UTC] <casey> Hello team!`
+
+2. Join message:
+   ```
+   [{timestamp}] {username} joined the channel
+   ```
+   Example: `[2023-06-22 15:56:54 UTC] casey joined the channel`
+
+3. Archive message:
+   ```
+   [{timestamp}] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}
+   ```
+   Example: `[2023-06-22 15:56:54 UTC] (channel_archive) <casey> {"user":"U123","text":"archived the channel"}`
+
+4. File share message:
+   ```
+   [{timestamp}] <{username}> shared a file: {file_name}
+   ```
+   Example: `[2023-06-22 15:56:54 UTC] <casey> shared a file: report.pdf`
+
+5. System message:
+   ```
+   [{timestamp}] {system message text}
+   ```
+   Example: `[2023-06-22 15:56:54 UTC] Channel created by casey`
+
+### System Messages with JSON
+
+Some system messages contain JSON payloads for special actions:
+
+1. Channel Archive:
+   ```
+   [{timestamp} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}
+   ```
+
+2. Canvas Update:
+   ```
+   [{timestamp} UTC] (channel_canvas_updated) <Slackbot> {"channel":"{id}","blocks":[...],"text":""}
+   ```
+
+These messages are stored with:
+- type: "system"
+- system_action: The action type from parentheses (e.g. "channel_archive", "channel_canvas_updated")
+- username: The username in brackets or "Slackbot"
+- text: The full JSON payload as a string
+
+### Message Parsing Rules
+
+1. Message Timestamps
+   - Every message MUST start with a timestamp in brackets
+   - Only the timestamp at the start of the line is parsed as a message timestamp
+   - Any timestamps appearing in message content are preserved as-is
+   - Example of a quoted message:
+     ```
+     [2024-12-27 17:30:14 UTC] <jennifer.scheel> Here is what they said:
+     [8:53 AM] User123: Hello world
+     [8:55 AM] User456: Hi there
+     ```
+     In this example, only `[2024-12-27 17:30:14 UTC]` is parsed as the message timestamp.
+     The `[8:53 AM]` and `[8:55 AM]` are preserved as part of the message content.
+
+## Timestamp Formats
+
+Message Timestamp Formats:
+
+Messages in Slack exports can have timestamps in multiple formats:
+
+1. Full UTC format (primary format):
+   ```
+   [{YYYY-MM-DD HH:MM:SS} UTC]
+   ```
+   Example: `[2023-06-22 15:56:54 UTC]`
+
+2. AM/PM format (alternate format):
+   ```
+   [{H:MM AM/PM}]
+   ```
+   Example: `[8:24 AM]` or `[1:48 PM]`
+
+3. 24-hour format (alternate format):
+   ```
+   [{HH:MM}]
+   ```
+   Example: `[13:26]`
+
+When parsing timestamps:
+- For full UTC format, use the exact timestamp
+- For AM/PM and 24-hour formats, use the current date with the specified time
+- All timestamps are stored in UTC in the database
 
 ## Database Schema
 

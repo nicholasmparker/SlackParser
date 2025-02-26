@@ -13,6 +13,7 @@ tqdm==4.66.3
 werkzeug==3.0.6
 beautifulsoup4==4.12.3
 aiohttp==3.10.11
+numpy==1.26.4  # Pin numpy to avoid chromadb compatibility issues
 
 # Test dependencies
 pytest==8.0.0
