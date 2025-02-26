@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import tenacity
 import re
+import traceback
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import List, Dict, Any, Optional
@@ -218,17 +219,23 @@ class EmbeddingService:
                 # Generate embedding
                 embedding = self.generate_embedding(text)
 
+                # Convert NumPy array to list for ChromaDB
+                if isinstance(embedding, np.ndarray):
+                    embedding = embedding.tolist()
+
                 # Add to ChromaDB
+                metadata = {
+                    "conversation_id": str(message["conversation_id"]),
+                    "timestamp": str(message.get("ts", "")),
+                    "thread_ts": str(message.get("thread_ts", "")),
+                    "user": str(message.get("user", "")),
+                }
+
                 self.collection.add(
                     embeddings=[embedding],
                     documents=[text],
                     ids=[str(message["_id"])],
-                    metadatas=[{
-                        "conversation_id": str(message["conversation_id"]),
-                        "timestamp": message.get("ts", ""),
-                        "thread_ts": message.get("thread_ts", ""),
-                        "user": message.get("user", ""),
-                    }]
+                    metadatas=[metadata]
                 )
 
                 logger.info(f"Added message ({message['_id']})")
@@ -246,14 +253,36 @@ class EmbeddingService:
         # Ensure ids are strings
         ids = [str(id) for id in ids]
 
+        # Convert NumPy arrays to lists if necessary
+        processed_embeddings = []
+        for emb in embeddings:
+            if isinstance(emb, np.ndarray):
+                processed_embeddings.append(emb.tolist())
+            else:
+                processed_embeddings.append(emb)
+
+        # Convert metadata values to strings
+        if metadatas:
+            processed_metadatas = []
+            for meta in metadatas:
+                if meta:
+                    processed_meta = {}
+                    for key, value in meta.items():
+                        processed_meta[key] = str(value)
+                    processed_metadatas.append(processed_meta)
+                else:
+                    processed_metadatas.append(meta)
+        else:
+            processed_metadatas = metadatas
+
         try:
             self.collection.add(
-                embeddings=embeddings,
+                embeddings=processed_embeddings,
                 documents=documents,
                 ids=ids,
-                metadatas=metadatas
+                metadatas=processed_metadatas
             )
-            logger.info(f"Added {len(embeddings)} embeddings to Chroma")
+            logger.info(f"Added {len(processed_embeddings)} embeddings to Chroma")
         except Exception as e:
             logger.error(f"Error adding embeddings: {str(e)}")
             raise
