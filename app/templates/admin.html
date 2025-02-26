@@ -147,12 +147,9 @@
                                     Cancel
                                 </button>
                             {% elif upload.status|lower == "imported" %}
-                                <form method="post" action="/admin/import/{{ upload._id }}/train" class="inline">
-                                    <button type="submit"
-                                            class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
-                                        Train Embeddings
-                                    </button>
-                                </form>
+                                <a href="/admin/embeddings/train/{{ upload._id }}" class="inline-block bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
+                                    Train Embeddings
+                                </a>
                             {% endif %}
                         </td>
                     </tr>
@@ -917,12 +914,9 @@ function updateActions(uploadId, status) {
         `;
     } else if (status === "imported") {
         actionsCell.innerHTML = `
-            <form method="post" action="/admin/import/${uploadId}/train" class="inline">
-                <button type="submit"
-                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
-                    Train Embeddings
-                </button>
-            </form>
+            <a href="/admin/embeddings/train/${uploadId}" class="inline-block bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
+                Train Embeddings
+            </a>
         `;
     } else if (status === "uploaded" || status === "extracted") {
         actionsCell.innerHTML = `

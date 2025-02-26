@@ -1136,7 +1136,7 @@ async def api_search(
         logger.error(f"Error in api_search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/admin/embeddings/train/{upload_id}")
+@app.route("/admin/embeddings/train/{upload_id}", methods=["GET", "POST"])
 async def train_embeddings(request: Request, upload_id: str):
     """Train embeddings for all messages from an import"""
     try:
