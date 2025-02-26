@@ -9,7 +9,7 @@ All collections live in the `slack_data` database by default (configurable via `
    - Main message storage
    - Indexed fields:
      - `text` (text index)
-     - `conversation_id` 
+     - `conversation_id`
      - `ts`
 
 2. `conversations`
@@ -44,7 +44,7 @@ All collections live in the `slack_data` database by default (configurable via `
 ```
 $DATA_DIR (default: data/)
 ├── channels/           # Channel message data
-├── dms/               # Direct message data  
+├── dms/               # Direct message data
 ├── uploads/           # Upload staging area
 └── extracts/          # Extracted archives
 
@@ -192,7 +192,7 @@ docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndex
    - Message Variations:
      1. Regular message: `[timestamp] <username> message text`
      2. System message: `[timestamp] username joined/left/etc`
-     3. Message with reactions: 
+     3. Message with reactions:
         ```
         [timestamp] <username> message text
             :emoji: username
@@ -207,6 +207,23 @@ docker-compose exec mongodb mongosh --eval "use slack_data; db.messages.getIndex
         ```
         [timestamp] username shared file(s) {FILE_ID} with text:
         ```
+
+## Message Formats
+
+### Timestamps
+Messages can have timestamps in multiple formats:
+1. Full timestamp: `[YYYY-MM-DD HH:MM:SS UTC]` (e.g. `[2023-07-11 21:17:07 UTC]`)
+2. 12-hour time: `[HH:MM AM/PM]` (e.g. `[12:26 PM]`)
+3. 24-hour time: `[HH:MM]` (e.g. `[13:26]`)
+
+All timestamps are stored in MongoDB as UTC datetime objects.
+
+### Message Types
+1. Regular message: `[{timestamp} UTC] <{username}> {message text}`
+2. Join message: `[{timestamp} UTC] {username} joined the channel`
+3. Archive message: `[{timestamp} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}`
+4. File share message: `[{timestamp} UTC] <{username}> shared a file: {file_name}`
+5. System message: `[{timestamp} UTC] {system message text}`
 
 ## Database Schema
 

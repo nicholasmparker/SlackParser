@@ -64,8 +64,24 @@ async def parse_message(line: str, channel_id: str) -> Optional[dict]:
         timestamp_str = line[1:ts_end].strip()
         content = line[ts_end + 1:].strip()
 
-        # Parse timestamp
-        ts = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S UTC")
+        # Parse timestamp - try multiple formats
+        ts = None
+        formats = [
+            "%Y-%m-%d %H:%M:%S UTC",  # 2023-07-11 21:17:07 UTC
+            "%I:%M %p",               # 12:26 PM
+            "%H:%M",                  # 13:26
+        ]
+
+        for fmt in formats:
+            try:
+                ts = datetime.strptime(timestamp_str, fmt)
+                break
+            except ValueError:
+                continue
+
+        if ts is None:
+            logger.warning(f"Could not parse timestamp: {timestamp_str}")
+            return None
 
         message = {
             "channel_id": channel_id,
@@ -99,33 +115,31 @@ async def parse_message(line: str, channel_id: str) -> Optional[dict]:
 
         elif "(channel_archive)" in content:
             # Archive message
+            message["type"] = "archive"
+            username_end = content.index(">")
+            message["username"] = content[1:username_end].strip()
             try:
-                # Parse archive JSON
-                archive_start = content.index("{")
-                archive_data = json.loads(content[archive_start:])
-                message["type"] = "archive"
-                message["text"] = archive_data.get("text", "")
-                # Extract username from content
-                username_start = content.index("<") + 1
-                username_end = content.index(">")
-                message["username"] = content[username_start:username_end].strip()
-            except:
-                return None
+                data = json.loads(content[username_end + 1:].strip())
+                message["text"] = data.get("text", "")
+                message["user_id"] = data.get("user", {}).get("id")
+            except json.JSONDecodeError:
+                message["text"] = content[username_end + 1:].strip()
+
+        elif "joined the channel" in content:
+            # Join message
+            message["type"] = "join"
+            message["username"] = content.split(" joined")[0].strip()
+            message["text"] = content
 
         else:
             # System message
-            space_idx = content.find(" ")
-            if space_idx == -1:
-                return None
-            message["username"] = content[:space_idx].strip()
-            message["text"] = content[space_idx + 1:].strip()
             message["type"] = "system"
-            message["system_action"] = message["text"].split()[0]  # First word is action
+            message["text"] = content
 
         return message
 
     except Exception as e:
-        print(f"Error parsing message: {str(e)}")
+        logger.error(f"Error parsing message: {str(e)}")
         return None
 
 async def parse_dm_metadata(dm_file: Path) -> dict:
@@ -575,15 +589,21 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
     extract_dir = Path(DATA_DIR) / "extracts" / upload_id
 
     try:
+        # Create extract directory
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract the ZIP file
+        await extract_with_progress(db, str(file_path), extract_dir, upload_id)
+
         # Get list of subdirectories
         subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
         if not subdirs:
-            error_msg = "No subdirectories found in extract"
+            error_msg = f"No subdirectories found in {extract_dir}"
             await db.uploads.update_one(
                 {"_id": ObjectId(upload_id)},
                 {"$set": {
-                    "status": ImportStatus.ERROR.value,
-                    "error": error_msg,
+                    "status": "ERROR",
+                    "error": f"Error during import: {error_msg}",
                     "updated_at": datetime.utcnow()
                 }}
             )
@@ -598,8 +618,8 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             await db.uploads.update_one(
                 {"_id": ObjectId(upload_id)},
                 {"$set": {
-                    "status": ImportStatus.ERROR.value,
-                    "error": error_msg,
+                    "status": "ERROR",
+                    "error": f"Error during import: {error_msg}",
                     "updated_at": datetime.utcnow()
                 }}
             )
@@ -609,7 +629,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
-                "status": ImportStatus.IMPORTING.value,
+                "status": "IMPORTING",
                 "progress": "Starting import...",
                 "progress_percent": 0,
                 "updated_at": datetime.utcnow()
@@ -666,18 +686,18 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
             await db.uploads.update_one(
                 {"_id": ObjectId(upload_id)},
                 {"$set": {
-                    "status": ImportStatus.ERROR.value,
+                    "status": "ERROR",
                     "error": "\n".join(errors),
                     "updated_at": datetime.utcnow()
                 }}
             )
-            return total_messages, errors
+            return 0, errors
 
         # Update final status
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
-                "status": ImportStatus.COMPLETED.value,
+                "status": "COMPLETED",
                 "progress": f"Import complete - {len(channel_dirs)} channels, {len(dm_dirs)} DMs, {total_messages} messages",
                 "progress_percent": 100,
                 "updated_at": datetime.utcnow()
@@ -695,7 +715,7 @@ async def import_slack_export(db: AsyncIOMotorClient, file_path: Path, upload_id
         await db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
-                "status": ImportStatus.ERROR.value,
+                "status": "ERROR",
                 "error": error_msg,
                 "updated_at": datetime.utcnow()
             }}
@@ -713,7 +733,7 @@ async def get_zip_total_size(zip_path: str) -> int:
 async def extract_with_progress(db: Any, zip_path: str, extract_dir: Path, upload_id: str):
     """Extract ZIP file with progress updates"""
     try:
-        total_size = get_zip_total_size(zip_path)
+        total_size = await get_zip_total_size(zip_path)
         extracted_size = 0
         last_update_time = time.time()
         UPDATE_INTERVAL = 1.0  # Update progress at most once per second

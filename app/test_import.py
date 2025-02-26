@@ -72,19 +72,41 @@ def parse_dm_metadata(lines: list[str]) -> dict:
             metadata["type"] = line.split(": ")[1].strip()
     return metadata
 
+def parse_timestamp(timestamp_str: str) -> datetime:
+    """Parse a timestamp string in any of the supported formats"""
+    formats = [
+        "%Y-%m-%d %H:%M:%S",  # 2023-07-11 21:17:07
+        "%I:%M %p",           # 12:26 PM
+        "%H:%M",              # 13:26
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(timestamp_str, fmt)
+        except ValueError:
+            continue
+
+    raise ValueError(f"Could not parse timestamp: {timestamp_str}")
+
 def parse_message_line(line: str) -> dict:
     """Parse a message line into components according to ARCHITECTURE.md format"""
     # Skip date separator lines
     if line.startswith("----"):
         return None
-        
+
     # All messages must start with timestamp
-    match = re.match(r'\[(.*) UTC\] (.*)', line)
+    match = re.match(r'\[(.*?)(?:\s+UTC)?\] (.*)', line)
     if not match:
         return None
-        
-    timestamp, content = match.groups()
-    
+
+    timestamp_str, content = match.groups()
+
+    try:
+        timestamp = parse_timestamp(timestamp_str)
+    except ValueError as e:
+        print(f"Warning: {str(e)}")
+        return None
+
     # Regular message: [{timestamp} UTC] <{username}> {text}
     regular_match = re.match(r'<([^>]+)> (.*)', content)
     if regular_match:
@@ -98,39 +120,43 @@ def parse_message_line(line: str) -> dict:
                 "type": "file_share",
                 "file_name": text.split("shared a file: ")[1]
             }
+        # Check for edited flag
+        is_edited = text.endswith(" (edited)")
+        if is_edited:
+            text = text[:-9]  # Remove (edited)
         return {
             "timestamp": timestamp,
             "username": username,
             "text": text,
-            "type": "message"
+            "type": "message",
+            "is_edited": is_edited
         }
-        
+
     # Join message: [{timestamp} UTC] {username} joined the channel
-    if "joined the channel" in content:
-        username = content.split(" joined")[0]
+    join_match = re.match(r'(.*?) joined the channel', content)
+    if join_match:
+        username = join_match.group(1)
         return {
             "timestamp": timestamp,
             "username": username,
             "text": content,
             "type": "join"
         }
-        
-    # Archive message: [{timestamp} UTC] (channel_archive) <{username}> {"user":{id},"text":"archived the channel"}
-    if "(channel_archive)" in content:
-        archive_match = re.match(r'\(channel_archive\) <([^>]+)> (.*)', content)
-        if archive_match:
-            username, archive_text = archive_match.groups()
-            return {
-                "timestamp": timestamp,
-                "username": username,
-                "text": archive_text,
-                "type": "archive"
-            }
-            
-    # System message: [{timestamp} UTC] {system message text}
+
+    # Archive message: [{timestamp} UTC] (channel_archive) <{username}> {json}
+    archive_match = re.match(r'\(channel_archive\) <([^>]+)> (.*)', content)
+    if archive_match:
+        username, text = archive_match.groups()
+        return {
+            "timestamp": timestamp,
+            "username": username,
+            "text": text,
+            "type": "archive"
+        }
+
+    # System message: [{timestamp} UTC] {text}
     return {
         "timestamp": timestamp,
-        "username": None,
         "text": content,
         "type": "system"
     }
@@ -142,36 +168,36 @@ async def test_import_channel_or_dm(dir_path: Path) -> tuple[int, list[str]]:
     """
     messages = 0
     errors = []
-    
+
     try:
         # Look for main message file with same name as directory
         message_file = dir_path / f"{dir_path.name}.txt"
         if not message_file.exists():
             print(f"No message file found at {message_file}")
             return messages, errors
-            
+
         # Read and parse the file
         print(f"\nReading {message_file.name}...")
         with open(message_file) as f:
             lines = f.readlines()
-            
+
         # Find the separator line
         try:
             separator_idx = lines.index("#################################################################\n")
         except ValueError:
             print(f"WARNING: No separator line found in {message_file}")
             return messages, errors
-            
+
         # Parse metadata from header
         header_lines = lines[:separator_idx]
         if "Direct Message" in "".join(header_lines):
             metadata = parse_dm_metadata(header_lines)
         else:
             metadata = parse_channel_metadata(header_lines)
-            
+
         print("\nMetadata:")
         print(metadata)
-            
+
         # Parse messages after "Messages:" line
         message_types = {}
         in_messages = False
@@ -179,28 +205,28 @@ async def test_import_channel_or_dm(dir_path: Path) -> tuple[int, list[str]]:
             line = line.strip()
             if not line:
                 continue
-                
+
             if line == "Messages:":
                 in_messages = True
                 continue
-                
+
             if not in_messages:
                 continue
-                
+
             message = parse_message_line(line)
             if message:
                 messages += 1
                 msg_type = message["type"]
                 message_types[msg_type] = message_types.get(msg_type, 0) + 1
-                        
+
         print(f"\nMessage type counts for {dir_path.name}:")
         print(message_types)
-                        
+
     except Exception as e:
         error = f"Error processing {dir_path}: {str(e)}"
         errors.append(error)
         print(f"ERROR: {error}")
-        
+
     return messages, errors
 
 async def test_import(extract_dir: Path):
@@ -209,48 +235,48 @@ async def test_import(extract_dir: Path):
     Does NOT modify database or files
     """
     print(f"Testing import from: {extract_dir}")
-    
+
     # Find slack export directory
     subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
     if not subdirs:
         print("ERROR: No subdirectories found")
         return
-        
+
     slack_dir = subdirs[0]
     channels_dir = slack_dir / 'channels'
     dms_dir = slack_dir / 'dms'
-    
+
     if not channels_dir.exists() and not dms_dir.exists():
         print("ERROR: No channels or DMs directory found")
         return
-        
+
     total_messages = 0
     total_errors = []
-    
+
     # Test channels
     if channels_dir.exists():
         channel_dirs = [d for d in channels_dir.iterdir() if d.is_dir()]
         print(f"\nFound {len(channel_dirs)} channels")
-        
+
         # Test more channels
         for channel_dir in list(channel_dirs)[:20]:
             print(f"\nProcessing channel: {channel_dir.name}")
             messages, errors = await test_import_channel_or_dm(channel_dir)
             total_messages += messages
             total_errors.extend(errors)
-            
+
     # Test DMs
     if dms_dir.exists():
         dm_dirs = [d for d in dms_dir.iterdir() if d.is_dir()]
         print(f"\nFound {len(dm_dirs)} DMs")
-        
+
         # Test more DMs
         for dm_dir in list(dm_dirs)[:20]:
             print(f"\nProcessing DM: {dm_dir.name}")
             messages, errors = await test_import_channel_or_dm(dm_dir)
             total_messages += messages
             total_errors.extend(errors)
-            
+
     print(f"\nFinal Summary:")
     print(f"Total messages that would be imported: {total_messages}")
     if total_errors:
@@ -265,10 +291,10 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python test_import.py /path/to/extract/dir")
         sys.exit(1)
-        
+
     extract_dir = Path(sys.argv[1])
     if not extract_dir.exists():
         print(f"Error: Directory does not exist: {extract_dir}")
         sys.exit(1)
-        
+
     asyncio.run(test_import(extract_dir))
