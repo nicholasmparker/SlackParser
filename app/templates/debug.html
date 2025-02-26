@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Debug - Slack Parser{% endblock %}
+
+{% block content %}
+<div class="container mx-auto px-4 py-8">
+    <h1 class="text-2xl font-bold mb-6">Debug Information</h1>
+
+    <div class="bg-gray-800 p-4 rounded mb-6">
+        <h2 class="text-xl font-bold mb-2">Upload Records</h2>
+        <pre class="text-xs text-gray-300 overflow-auto max-h-96">{{ uploads_json }}</pre>
+    </div>
+
+    <div class="bg-gray-800 p-4 rounded mb-6">
+        <h2 class="text-xl font-bold mb-2">HTML Structure</h2>
+        <div class="mb-4">
+            <h3 class="text-lg font-bold">Server-Side Template</h3>
+            <pre class="text-xs text-gray-300 overflow-auto max-h-48">{{ server_template }}</pre>
+        </div>
+        <div>
+            <h3 class="text-lg font-bold">JavaScript Template</h3>
+            <pre class="text-xs text-gray-300 overflow-auto max-h-48">{{ js_template }}</pre>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 p-4 rounded">
+        <h2 class="text-xl font-bold mb-2">Actions</h2>
+        <div class="flex space-x-4">
+            <a href="/admin" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Back to Admin</a>
+            <button id="refresh-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">Refresh Data</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.getElementById('refresh-btn').addEventListener('click', function() {
+        window.location.reload();
+    });
+</script>
+{% endblock %}

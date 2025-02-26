@@ -448,10 +448,10 @@ Note: Both `username` and `user_name` fields contain the same value, but are use
 
 3. Error States:
    - `ERROR` -> An error occurred during any step
-   - `cancelled` -> Import was manually cancelled
+   - `CANCELLED` -> Import was manually cancelled
    - `FAILED` -> Legacy error state, same as ERROR
 
 4. Restart Rules:
-   - Can restart from `ERROR`, `cancelled`, or `UPLOADED` states
+   - Can restart from `ERROR`, `CANCELLED`, or `UPLOADED` states
    - If files were already extracted, skips extraction step
    - Otherwise starts from the beginning

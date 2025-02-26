@@ -4,9 +4,21 @@ These models define the structure of our MongoDB collections.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 from bson import ObjectId
+
+class UploadStatus(str, Enum):
+    """Status of a Slack export upload and processing"""
+    UPLOADED = "UPLOADED"  # Initial state after file upload
+    EXTRACTING = "EXTRACTING"  # ZIP file is being extracted
+    EXTRACTED = "EXTRACTED"  # ZIP extraction complete
+    IMPORTING = "IMPORTING"  # Data being imported to MongoDB
+    IMPORTED = "IMPORTED"  # MongoDB import complete
+    EMBEDDING = "EMBEDDING"  # Creating embeddings
+    COMPLETE = "COMPLETE"  # All processing complete
+    ERROR = "ERROR"  # Error in any stage
 
 class Upload(BaseModel):
     """uploads collection - tracks file upload status"""
@@ -14,7 +26,7 @@ class Upload(BaseModel):
 
     id: ObjectId = Field(alias="_id")
     filename: str
-    status: str  # UPLOADED, EXTRACTING, etc.
+    status: UploadStatus  # Use enum instead of string
     created_at: datetime
     updated_at: datetime
     size: int
@@ -22,6 +34,8 @@ class Upload(BaseModel):
     error: Optional[str] = None
     progress: str
     progress_percent: int
+    current_stage: Optional[str] = None  # Track which stage we're in
+    stage_progress: Optional[int] = None  # Progress within current stage
 
 class Channel(BaseModel):
     """channels collection - stores both channels and DMs"""

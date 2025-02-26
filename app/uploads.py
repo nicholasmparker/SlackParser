@@ -6,14 +6,14 @@ from bson import ObjectId
 
 # Upload status model
 class UploadStatus:
-    UPLOADING = "uploading"
-    UPLOADED = "uploaded"
-    VALIDATING = "validating"
-    EXTRACTING = "extracting"
-    IMPORTING = "importing"
-    TRAINING = "training"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    UPLOADING = "UPLOADING"
+    UPLOADED = "UPLOADED"
+    VALIDATING = "VALIDATING"
+    EXTRACTING = "EXTRACTING"
+    IMPORTING = "IMPORTING"
+    TRAINING = "TRAINING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 class UploadDetails(BaseModel):
     filename: str
@@ -38,7 +38,7 @@ class Upload(BaseModel):
 async def create_upload(db: AsyncIOMotorClient, filename: str, size: int, chunk_size: int) -> Upload:
     """Create a new upload record"""
     chunks_total = (size + chunk_size - 1) // chunk_size
-    
+
     upload = {
         "status": UploadStatus.UPLOADING,
         "details": {
@@ -51,7 +51,7 @@ async def create_upload(db: AsyncIOMotorClient, filename: str, size: int, chunk_
         "created_at": datetime.now(),
         "updated_at": datetime.now()
     }
-    
+
     result = await db.uploads.insert_one(upload)
     upload["id"] = str(result.inserted_id)
     return Upload(**upload)
@@ -78,8 +78,8 @@ async def get_upload(db: AsyncIOMotorClient, upload_id: str) -> Optional[Upload]
     return None
 
 async def update_upload_status(
-    db: AsyncIOMotorClient, 
-    upload_id: str, 
+    db: AsyncIOMotorClient,
+    upload_id: str,
     status: str,
     error: Optional[str] = None,
     **details
@@ -89,14 +89,14 @@ async def update_upload_status(
         "status": status,
         "updated_at": datetime.now()
     }
-    
+
     if error:
         update["error"] = error
-        
+
     if details:
         for key, value in details.items():
             update[f"details.{key}"] = value
-            
+
     await db.uploads.update_one(
         {"_id": ObjectId(upload_id)},
         {"$set": update}

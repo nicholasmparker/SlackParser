@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional, Dict, Any, List
 import os
+import traceback
 from pathlib import Path
 from datetime import datetime
 import logging
@@ -1180,28 +1181,14 @@ async def train_embeddings(request: Request, upload_id: str):
             }
         )
 
-        # Get all conversations
-        logger.info("Getting all conversations")
-        conversations = await app.db.conversations.find().to_list(length=None)
-        if not conversations:
-            logger.info("No conversations found, checking collection exists")
-            collections = await app.db.list_collection_names()
-            logger.info(f"Collections in database: {collections}")
-            sample = await app.db.messages.find_one()
-            logger.info(f"Sample message: {sample}")
-            raise Exception("No conversations found in database")
-
-        conversation_ids = [conv["_id"] for conv in conversations]
-        logger.info(f"Found {len(conversation_ids)} conversations: {conversation_ids}")
-
-        # Get messages for all conversations
-        logger.info("Getting messages for all conversations")
-        messages = await app.db.messages.find({"conversation_id": {"$in": conversation_ids}}).to_list(length=None)
+        # Get all messages
+        logger.info("Getting all messages")
+        messages = await app.db.messages.find().to_list(length=None)
         logger.info(f"Found {len(messages)} messages")
 
         if not messages:
-            logger.error("No messages found in any conversations")
-            raise Exception("No messages found in any conversations")
+            logger.error("No messages found in database")
+            raise Exception("No messages found in database")
 
         # Add messages to ChromaDB
         logger.info("Adding messages to ChromaDB")
@@ -1210,6 +1197,19 @@ async def train_embeddings(request: Request, upload_id: str):
             logger.info("Successfully added messages to ChromaDB")
         except Exception as e:
             logger.error(f"Error adding messages to ChromaDB: {str(e)}")
+            logger.error(traceback.format_exc())
+
+            # Update status to error
+            await app.db.uploads.update_one(
+                {"_id": ObjectId(upload_id)},
+                {
+                    "$set": {
+                        "training_status": "failed",
+                        "training_error": f"Error training embeddings: {str(e)}",
+                        "training_progress": 0
+                    }
+                }
+            )
             raise
 
         # Update status to completed

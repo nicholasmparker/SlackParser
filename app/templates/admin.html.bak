@@ -1,0 +1,1021 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-4">
+    <!-- Stats -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div class="bg-[#222529] rounded-lg p-4 border border-gray-700 transition-all hover:border-gray-600">
+            <h6 class="text-gray-400 text-sm font-medium mb-2">Total Messages</h6>
+            <h2 class="text-2xl font-bold text-gray-100">{{ stats.total_messages }}</h2>
+        </div>
+        <div class="bg-[#222529] rounded-lg p-4 border border-gray-700 transition-all hover:border-gray-600">
+            <h6 class="text-gray-400 text-sm font-medium mb-2">Total Channels</h6>
+            <h2 class="text-2xl font-bold text-gray-100">{{ stats.total_channels }}</h2>
+        </div>
+        <div class="bg-[#222529] rounded-lg p-4 border border-gray-700 transition-all hover:border-gray-600">
+            <h6 class="text-gray-400 text-sm font-medium mb-2">Total Users</h6>
+            <h2 class="text-2xl font-bold text-gray-100">{{ stats.total_users }}</h2>
+        </div>
+    </div>
+
+    <!-- Upload Section -->
+    <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700 transition-all hover:border-gray-600">
+        <h3 class="text-lg font-medium text-gray-100 mb-2">Upload Slack Export</h3>
+        <p class="text-gray-400 mb-4">Upload your Slack export ZIP file here. The file will be processed and indexed for searching.</p>
+
+        <form id="uploadForm" method="post" action="/admin/upload" enctype="multipart/form-data" class="space-y-4">
+            <div class="flex gap-2">
+                <input type="file"
+                       class="flex-1 bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] focus:ring-offset-0 transition-colors"
+                       id="file"
+                       name="file"
+                       accept=".zip">
+                <button type="submit"
+                        id="uploadButton"
+                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-4 py-2 rounded transition-colors">
+                    Upload
+                </button>
+            </div>
+        </form>
+
+        <div id="uploadProgress" class="hidden mt-4">
+            <div class="flex justify-between items-center mb-2">
+                <div id="uploadStatus" class="text-[#1264a3]">Uploading...</div>
+                <div class="text-gray-400">
+                    <span id="uploadedSize">0</span>/<span id="totalSize">0</span> MB
+                </div>
+            </div>
+            <div class="bg-[#1A1D21] rounded-full h-2 overflow-hidden">
+                <div id="progressBar" class="bg-[#1264a3] h-full transition-all duration-200" style="width: 0%"></div>
+            </div>
+            <div class="text-right mt-1">
+                <small class="text-gray-400"><span id="uploadPercent">0</span>% complete</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Uploads -->
+    <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700 transition-all hover:border-gray-600">
+        <h3 class="text-lg font-medium text-gray-100 mb-4">Recent Uploads</h3>
+        <div class="overflow-x-auto">
+            <table class="w-full">
+                <thead>
+                    <tr class="text-left border-b border-gray-700">
+                        <th class="pb-3 text-gray-400 font-medium">Filename</th>
+                        <th class="pb-3 text-gray-400 font-medium">Status</th>
+                        <th class="pb-3 text-gray-400 font-medium">Size</th>
+                        <th class="pb-3 text-gray-400 font-medium">Created</th>
+                        <th class="pb-3 text-gray-400 font-medium text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for upload in uploads %}
+                    <tr data-upload-id="{{ upload._id }}" class="hover:bg-[#2C2F33] transition-colors">
+                        <td class="py-3 text-gray-100">{{ upload.filename }}</td>
+                        <td class="py-3" id="status-cell-{{ upload._id }}">
+                            {% if upload.status|lower == "extracting" %}
+                                <div class="space-y-2">
+                                    <span id="status-{{ upload._id }}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                                    <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-400 mt-1">{{ upload.progress }}</div>
+                                    {% if upload.progress_percent is not none %}
+                                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                                            <div id="progress-{{ upload._id }}"
+                                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                                 style="width: {{ upload.progress_percent }}%">
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            {% elif upload.status|lower == "importing" %}
+                                <div class="space-y-2">
+                                    <span id="status-{{ upload._id }}" class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Importing</span>
+                                    <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-400 mt-1">{{ upload.progress }}</div>
+                                    {% if upload.progress_percent is not none %}
+                                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                                            <div id="progress-{{ upload._id }}"
+                                                 class="bg-green-600 h-2.5 rounded-full transition-all duration-300"
+                                                 style="width: {{ upload.progress_percent }}%">
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            {% elif upload.status|lower == "extracted" %}
+                                <div class="space-y-2">
+                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracted</span>
+                                </div>
+                            {% elif upload.status|lower == "embedding" %}
+                                <div class="space-y-2">
+                                    <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Creating Embeddings</span>
+                                    {% if upload.progress_percent is not none %}
+                                        <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
+                                            <div class="bg-[#1264a3] h-full transition-all duration-200"
+                                                 style="width: {{ upload.progress_percent }}%"></div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            {% elif upload.status|lower == "imported" %}
+                                <div class="space-y-2">
+                                    <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Import Complete</span>
+                                </div>
+                            {% elif upload.status|lower == "error" or upload.status|lower == "cancelled" %}
+                                <div class="space-y-2">
+                                    <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">{{ upload.status | title }}</span>
+                                    {% if upload.error %}
+                                        <div class="text-red-400 text-xs mt-1">{{ upload.error }}</div>
+                                    {% endif %}
+                                    <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('{{ upload._id }}')">
+                                        Restart Import
+                                    </button>
+                                </div>
+                            {% elif upload.status|lower == "uploaded" %}
+                                <span id="status-{{ upload._id }}" class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+                            {% else %}
+                                <span id="status-{{ upload._id }}" class="bg-gray-800 text-gray-300 px-2 py-1 rounded-full text-xs">{{ upload.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="py-3 text-gray-100">{{ upload.size | filesizeformat }}</td>
+                        <td class="py-3 text-gray-100">{{ upload.created_at | strftime }}</td>
+                        <td class="py-3 text-right space-x-2" id="actions-cell-{{ upload._id }}">
+                            {% if upload.status|lower in ["uploaded", "error", "extracted"] %}
+                            <button onclick="startImport('{{ upload._id }}')"
+                                    class="text-white bg-[#1264a3] hover:bg-[#0b4d82] px-3 py-1 rounded text-sm transition-colors">
+                                Start Import
+                            </button>
+                            {% elif upload.status|lower in ["importing", "extracting"] %}
+                                <button onclick="cancelImport('{{ upload._id }}')"
+                                        class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors">
+                                    Cancel
+                                </button>
+                            {% elif upload.status|lower == "imported" %}
+                                <form method="post" action="/admin/embeddings/train/${upload._id}" class="inline">
+                                    <button type="submit"
+                                            class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
+                                        Train Embeddings
+                                    </button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not uploads %}
+                    <tr>
+                        <td colspan="5" class="py-8 text-center text-gray-400">
+                            No uploads found
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Clear Data Section -->
+    <div class="bg-[#222529] rounded-lg p-6 border border-gray-700 transition-all hover:border-gray-600">
+        <h3 class="text-lg font-medium text-gray-100 mb-2">Clear Data</h3>
+        <p class="text-gray-400 mb-4">Select which data you want to clear from the system.</p>
+
+        <form action="/admin/clear" method="post" class="space-y-4">
+            <div class="space-y-2">
+                <label class="flex items-center gap-2 text-gray-100 hover:text-white transition-colors">
+                    <input type="checkbox" name="clear_messages" class="rounded border-gray-700 bg-[#1A1D21] text-[#1264a3] focus:ring-[#1264a3] focus:ring-2 focus:ring-offset-0 transition-colors">
+                    Clear all messages
+                </label>
+                <label class="flex items-center gap-2 text-gray-100 hover:text-white transition-colors">
+                    <input type="checkbox" name="clear_uploads" class="rounded border-gray-700 bg-[#1A1D21] text-[#1264a3] focus:ring-[#1264a3] focus:ring-2 focus:ring-offset-0 transition-colors">
+                    Clear upload history
+                </label>
+                <label class="flex items-center gap-2 text-gray-100 hover:text-white transition-colors">
+                    <input type="checkbox" name="clear_embeddings" class="rounded border-gray-700 bg-[#1A1D21] text-[#1264a3] focus:ring-[#1264a3] focus:ring-2 focus:ring-offset-0 transition-colors">
+                    Clear search embeddings
+                </label>
+            </div>
+
+            <button type="submit"
+                    id="clearButton"
+                    class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled>
+                Clear Selected Data
+            </button>
+        </form>
+    </div>
+</div>
+
+{% block scripts %}
+<script src="/static/js/admin.js"></script>
+<script>
+console.log('=== DEBUG INFO ===');
+console.log('Document loaded at:', new Date().toISOString());
+document.querySelectorAll('tr[data-upload-id]').forEach(row => {
+    const uploadId = row.getAttribute('data-upload-id');
+    const statusCell = row.querySelector(`#status-cell-${uploadId}`);
+    const statusText = statusCell ? statusCell.textContent.trim() : 'unknown';
+    console.log(`Upload ${uploadId}: Status = "${statusText}"`);
+    console.log(`Status cell HTML:`, statusCell ? statusCell.innerHTML : 'not found');
+});
+
+// Store polling intervals by upload ID
+window.pollIntervals = window.pollIntervals || {};
+
+/*
+ * CRITICAL: DO NOT MODIFY THIS WORKING UPLOAD HANDLER
+ * This code handles file uploads with progress tracking using XMLHttpRequest
+ * It was working as of Feb 25, 2025 and should not be "improved" or "cleaned up"
+ *
+ * Key components:
+ * 1. Form submission handler
+ * 2. Progress tracking via xhr.upload.onprogress
+ * 3. Status updates and error handling
+ * 4. UI feedback (progress bar, button state, etc)
+ */
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    // Get the file from the input
+    // CRITICAL: This must stay as getElementById, do not "improve" to querySelector
+    const fileInput = document.getElementById('file');
+    const file = fileInput.files[0];
+    if (!file) {
+        alert('Please select a file first');
+        return;
+    }
+
+    // Get all UI elements that we'll need to update
+    // CRITICAL: These IDs must match the HTML exactly
+    const uploadButton = document.getElementById('uploadButton');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const progressBar = document.getElementById('progressBar');
+    const uploadPercent = document.getElementById('uploadPercent');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const uploadedSize = document.getElementById('uploadedSize');
+    const totalSize = document.getElementById('totalSize');
+
+    // Show progress UI and disable upload button
+    uploadProgress.classList.remove('hidden');
+    uploadButton.disabled = true;
+    uploadButton.classList.add('opacity-50');
+    totalSize.textContent = (file.size / (1024 * 1024)).toFixed(1);
+
+    // CRITICAL: Must use XMLHttpRequest for upload progress
+    // Do not "improve" to fetch() - it doesn't support progress tracking
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/admin/upload');
+
+    // Track upload progress
+    // This event fires repeatedly as chunks are uploaded
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressBar.style.width = percent + '%';
+            uploadPercent.textContent = percent;
+            uploadedSize.textContent = (e.loaded / (1024 * 1024)).toFixed(1);
+        }
+    };
+
+    // Handle response state changes
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {  // 4 = DONE
+            if (xhr.status === 200) {
+                // Success - show green status
+                uploadStatus.textContent = 'Upload complete!';
+                uploadStatus.classList.remove('text-[#1264a3]');
+                uploadStatus.classList.add('text-green-500');
+                progressBar.classList.add('bg-green-500');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                // Error - show red status and error message
+                uploadStatus.textContent = 'Upload failed!';
+                uploadStatus.classList.remove('text-[#1264a3]');
+                uploadStatus.classList.add('text-red-500');
+                progressBar.classList.add('bg-red-500');
+                uploadButton.disabled = false;
+                uploadButton.classList.remove('opacity-50');
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    alert('Upload failed: ' + (response.detail || xhr.statusText));
+                } catch (e) {
+                    alert('Upload failed: ' + xhr.statusText);
+                }
+            }
+        }
+    };
+
+    // Send the file
+    const formData = new FormData();
+    formData.append('file', file);
+    xhr.send(formData);
+});
+
+// Enable clear button only when at least one checkbox is checked
+const clearForm = document.querySelector('form[action="/admin/clear"]');
+const clearButton = document.getElementById('clearButton');
+const clearCheckboxes = clearForm.querySelectorAll('input[type="checkbox"]');
+
+function updateClearButton() {
+    clearButton.disabled = !Array.from(clearCheckboxes).some(cb => cb.checked);
+}
+
+clearCheckboxes.forEach(cb => {
+    cb.addEventListener('change', updateClearButton);
+});
+
+// Handle training buttons
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.train-button').forEach(button => {
+        button.addEventListener('click', async (e) => {
+            const uploadId = e.target.dataset.uploadId;
+            const row = document.querySelector(`tr[data-upload-id="${uploadId}"]`);
+            const statusCell = row.querySelector('td:nth-child(2)');
+
+            // Disable button and show loading state
+            e.target.disabled = true;
+            e.target.textContent = 'Training...';
+
+            try {
+                const response = await fetch(`/admin/train/${uploadId}`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    // Update status cell to show progress
+                    statusCell.innerHTML = `
+                        <div>
+                            <span class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs mb-2">Training</span>
+                            <div class="bg-[#1A1D21] rounded-full h-1 mt-2 overflow-hidden w-32">
+                                <div class="bg-[#1264a3] h-full transition-all duration-200" style="width: 0%"></div>
+                            </div>
+                            <small class="text-gray-400 text-xs block mt-1">0% complete</small>
+                        </div>
+                    `;
+
+                    // Remove the train button
+                    e.target.remove();
+
+                    // Start polling for progress
+                    pollTrainingStatus(uploadId);
+                } else {
+                    throw new Error('Training failed to start');
+                }
+            } catch (error) {
+                console.error('Error starting training:', error);
+                e.target.disabled = false;
+                e.target.textContent = 'Train';
+                alert('Failed to start training. Please try again.');
+            }
+        });
+    });
+});
+
+// Poll for training status
+async function pollTrainingStatus(uploadId) {
+    const row = document.querySelector(`tr[data-upload-id="${uploadId}"]`);
+    const statusCell = row.querySelector('td:nth-child(2)');
+
+    try {
+        const response = await fetch(`/admin/training-status/${uploadId}`);
+        const data = await response.json();
+
+        if (data.status === 'running') {
+            // Update progress bar
+            const progressBar = statusCell.querySelector('.bg-[#1264a3]');
+            const progressText = statusCell.querySelector('small');
+
+            if (progressBar && progressText) {
+                progressBar.style.width = `${data.progress}%`;
+                progressText.textContent = `${data.progress}% complete`;
+            }
+
+            // Continue polling
+            setTimeout(() => pollTrainingStatus(uploadId), 1000);
+        } else if (data.status === 'completed') {
+            // Show completion state
+            statusCell.innerHTML = `
+                <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Training Complete</span>
+            `;
+        } else if (data.status === 'failed') {
+            // Show failure state and restore train button
+            statusCell.innerHTML = `
+                <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Training Failed</span>
+            `;
+
+            const actionsCell = row.querySelector('td:last-child');
+            actionsCell.innerHTML = `
+                <div class="flex justify-end gap-2">
+                    <button class="train-button bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1.5 rounded text-sm transition-colors"
+                            data-upload-id="${uploadId}">
+                        Train
+                    </button>
+                    <button class="delete-button bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm transition-colors"
+                            data-upload-id="${uploadId}">
+                        Delete
+                    </button>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error polling training status:', error);
+    }
+}
+
+// Start polling if there are any imports in progress
+const hasActiveImports = document.querySelector('tr[data-upload-id]') !== null;
+if (hasActiveImports) {
+    pollImportStatus();
+}
+
+function pollImportStatus() {
+    // Find all uploads with status that should be polled
+    const rows = document.querySelectorAll('tr[data-upload-id]');
+    rows.forEach(row => {
+        const uploadId = row.getAttribute('data-upload-id');
+        const statusElement = row.querySelector(`#status-${uploadId}`);
+
+        if (statusElement &&
+            (statusElement.textContent.includes('Extracting') ||
+             statusElement.textContent.includes('Importing'))) {
+            pollProgress(uploadId);
+        }
+    });
+}
+
+function startImport(uploadId) {
+    console.log('Starting import for:', uploadId);
+
+    // Get the status and actions cells
+    const statusCell = document.getElementById(`status-cell-${uploadId}`);
+    const actionsCell = document.getElementById(`actions-cell-${uploadId}`);
+
+    if (!statusCell || !actionsCell) {
+        console.error('Could not find status or actions cell for upload:', uploadId);
+        alert('Error: Could not update UI. Please refresh the page and try again.');
+        return;
+    }
+
+    // Check if this is an extracted file or a newly uploaded file
+    const statusElement = document.getElementById(`status-${uploadId}`);
+    const isExtracted = statusElement && statusElement.textContent.includes('Extracted');
+
+    // Log the current HTML for debugging
+    console.log('Current status cell HTML before update:', statusCell.innerHTML);
+    console.log('Current actions cell HTML before update:', actionsCell.innerHTML);
+    console.log('Is already extracted:', isExtracted);
+
+    // Immediately update UI to show starting state
+    if (isExtracted) {
+        // If already extracted, show importing state
+        statusCell.innerHTML = `
+            <div class="space-y-2">
+                <span id="status-${uploadId}" class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Importing</span>
+                <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">Starting import...</div>
+                <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                    <div id="progress-${uploadId}"
+                         class="bg-green-600 h-2.5 rounded-full transition-all duration-300"
+                         style="width: 0%">
+                    </div>
+                </div>
+            </div>
+        `;
+    } else {
+        // If not extracted yet, show extracting state
+        statusCell.innerHTML = `
+            <div class="space-y-2">
+                <span id="status-${uploadId}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">Starting extraction...</div>
+                <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                    <div id="progress-${uploadId}"
+                         class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                         style="width: 0%">
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Update the actions cell to show Cancel button
+    actionsCell.innerHTML = `
+        <button onclick="cancelImport('${uploadId}')"
+                class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors">
+            Cancel
+        </button>
+    `;
+
+    console.log('Updated UI to STARTING state');
+    console.log('New status cell HTML:', statusCell.innerHTML);
+    console.log('New actions cell HTML:', actionsCell.innerHTML);
+
+    fetch(`/admin/import/${uploadId}/start`, {
+        method: 'POST'
+    })
+    .then(response => {
+        console.log('Start import response:', response);
+        if (!response.ok) {
+            throw new Error('Failed to start import');
+        }
+
+        // Try to parse JSON response, but don't fail if it's not JSON
+        return response.json().catch(err => {
+            console.log('Non-JSON response, but import started successfully');
+            return { status: 'ok' };
+        });
+    })
+    .then(data => {
+        console.log('Import started data:', data);
+
+        // Start polling for progress
+        pollProgress(uploadId);
+        console.log('Started polling for progress');
+    })
+    .catch(error => {
+        console.error('Error starting import:', error);
+
+        // Restore UI to previous state
+        statusCell.innerHTML = `
+            <span id="status-${uploadId}" class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+        `;
+
+        actionsCell.innerHTML = `
+            <button onclick="startImport('${uploadId}')"
+                    class="text-white bg-[#1264a3] hover:bg-[#0b4d82] px-3 py-1 rounded text-sm transition-colors">
+                Start Import
+            </button>
+        `;
+
+        console.log('Restored UI to UPLOADED state due to error');
+
+        alert('Failed to start import: ' + error.message);
+    });
+}
+
+function pollProgress(uploadId) {
+    console.log('Starting to poll progress for upload ID:', uploadId);
+
+    if (!window.pollIntervals) {
+        window.pollIntervals = {};
+    }
+
+    // Clear any existing interval for this upload
+    if (window.pollIntervals[uploadId]) {
+        clearInterval(window.pollIntervals[uploadId]);
+    }
+
+    // Set up polling interval
+    const interval = setInterval(() => {
+        console.log('Polling progress for upload ID:', uploadId);
+
+        fetch(`/admin/import/${uploadId}/status`)
+        .then(response => response.json())
+        .then(data => {
+            console.log('Received status data:', data);
+
+            const statusCell = document.getElementById(`status-cell-${uploadId}`);
+            if (!statusCell) return;
+
+            // Update UI based on status (case insensitive comparison)
+            // Status will be lowercase from the server
+            const status = data.status.toLowerCase();
+
+            if (status === "extracting") {
+                // Use the exact same HTML structure as the server-side template
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span id="status-${uploadId}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                        <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${data.progress || 'Extracting ZIP file...'}</div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                            <div id="progress-${uploadId}"
+                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                 style="width: ${data.progress_percent || 0}%">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else if (status === "importing") {
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span id="status-${uploadId}" class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Importing</span>
+                        <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${data.progress || 'Importing data...'}</div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                            <div id="progress-${uploadId}"
+                                 class="bg-green-600 h-2.5 rounded-full transition-all duration-300"
+                                 style="width: ${data.progress_percent || 0}%">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else if (status === "completed") {
+                statusCell.innerHTML = `
+                    <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Completed</span>
+                `;
+            } else if (status === "uploaded") {
+                statusCell.innerHTML = `
+                    <span id="status-${uploadId}" class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+                `;
+            } else if (status === "extracted") {
+                statusCell.innerHTML = `
+                    <span id="status-${uploadId}" class="bg-blue-500 text-blue-100 px-2 py-1 rounded-full text-xs">Extracted</span>
+                    <div class="text-sm text-gray-400 mt-1">Ready for import</div>
+                `;
+            } else if (status === "error") {
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Error</span>
+                        <div class="text-red-400 text-xs mt-1">${data.error || 'Unknown error'}</div>
+                        <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('${uploadId}')">
+                            Restart Import
+                        </button>
+                    </div>
+                `;
+            } else if (status === "cancelled") {
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Cancelled</span>
+                        <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('${uploadId}')">
+                            Restart Import
+                        </button>
+                    </div>
+                `;
+            } else {
+                // Default case for any other status
+                statusCell.innerHTML = `
+                    <span id="status-${uploadId}" class="bg-gray-800 text-gray-300 px-2 py-1 rounded-full text-xs">${data.status}</span>
+                `;
+            }
+
+            // Update the actions cell based on the status
+            updateActions(uploadId, data.status);
+
+            console.log('Updated UI with status:', data.status);
+            console.log('New status cell HTML after update:', statusCell.innerHTML);
+
+            // Stop polling if complete, error, or uploaded (cancelled)
+            if (status === 'completed' || status === 'error' || status === 'uploaded' || status === 'cancelled') {
+                console.log('Stopping polling due to final status:', data.status);
+                clearInterval(window.pollIntervals[uploadId]);
+                delete window.pollIntervals[uploadId];
+            }
+        })
+        .catch(err => {
+            console.error('Error polling progress:', err);
+        });
+    }, 1000);
+
+    window.pollIntervals[uploadId] = interval;
+}
+
+function cancelImport(uploadId) {
+    console.log('Cancelling import for:', uploadId);
+
+    // Get the status and actions cells
+    const statusCell = document.getElementById(`status-cell-${uploadId}`);
+    const actionsCell = document.getElementById(`actions-cell-${uploadId}`);
+
+    if (!statusCell || !actionsCell) {
+        console.error('Could not find status or actions cell for upload:', uploadId);
+        alert('Error: Could not update UI. Please refresh the page and try again.');
+        return;
+    }
+
+    // Log the current HTML for debugging
+    console.log('Current status cell HTML before cancel:', statusCell.innerHTML);
+    console.log('Current actions cell HTML before cancel:', actionsCell.innerHTML);
+
+    // Immediately update UI to show cancelling state
+    statusCell.innerHTML = `
+        <span id="status-${uploadId}" class="bg-gray-800 text-gray-300 px-2 py-1 rounded-full text-xs">Cancelling...</span>
+    `;
+
+    actionsCell.innerHTML = `
+        <span class="text-gray-500 text-sm">Cancelling...</span>
+    `;
+
+    console.log('Updated UI to CANCELLING state');
+    console.log('New status cell HTML:', statusCell.innerHTML);
+    console.log('New actions cell HTML:', actionsCell.innerHTML);
+
+    fetch(`/admin/import/${uploadId}/cancel`, {
+        method: 'POST'
+    })
+    .then(response => {
+        console.log('Cancel import response:', response);
+        if (!response.ok) {
+            throw new Error('Failed to cancel import');
+        }
+
+        // Try to parse JSON response, but don't fail if it's not JSON
+        return response.json().catch(err => {
+            console.log('Non-JSON response, but import cancelled successfully');
+            return { status: 'UPLOADED' };
+        });
+    })
+    .then(data => {
+        console.log('Import cancelled data:', data);
+
+        // Update UI to show uploaded state
+        statusCell.innerHTML = `
+            <span id="status-${uploadId}" class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+        `;
+
+        actionsCell.innerHTML = `
+            <button onclick="startImport('${uploadId}')"
+                    class="text-white bg-[#1264a3] hover:bg-[#0b4d82] px-3 py-1 rounded text-sm transition-colors">
+                Start Import
+            </button>
+        `;
+
+        console.log('Updated UI to UPLOADED state after cancel');
+        console.log('New status cell HTML:', statusCell.innerHTML);
+        console.log('New actions cell HTML:', actionsCell.innerHTML);
+
+        // Clear any polling interval
+        if (window.pollIntervals && window.pollIntervals[uploadId]) {
+            clearInterval(window.pollIntervals[uploadId]);
+            delete window.pollIntervals[uploadId];
+            console.log('Cleared polling interval after cancel');
+        }
+    })
+    .catch(error => {
+        console.error('Error cancelling import:', error);
+        alert('Failed to cancel import: ' + error.message);
+    });
+}
+
+function restartImport(uploadId) {
+    if (!confirm('Are you sure you want to restart this import?')) {
+        return;
+    }
+
+    fetch(`/api/restart_import/${uploadId}`, {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .catch(error => {
+        console.error('Error restarting import:', error);
+    })
+    .finally(() => {
+        // Always reload after a short delay to let the import start
+        setTimeout(() => window.location.reload(), 1000);
+    });
+}
+
+function forceUpdateAllUploads() {
+    console.log('Force updating all uploads...');
+
+    // Get all upload rows
+    const uploadRows = document.querySelectorAll('tr[data-upload-id]');
+
+    uploadRows.forEach(row => {
+        const uploadId = row.dataset.uploadId;
+        console.log(`Force updating upload ID: ${uploadId}`);
+
+        fetch(`/admin/import/${uploadId}/status`)
+        .then(response => response.json())
+        .then(data => {
+            console.log(`Status for ${uploadId}:`, data);
+
+            // Force update the UI
+            const statusCell = document.getElementById(`status-cell-${uploadId}`);
+            const status = data.status.toLowerCase();
+
+            if (status === "extracting") {
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span id="status-${uploadId}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                        <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${data.progress || 'Extracting ZIP file...'}</div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                            <div id="progress-${uploadId}"
+                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                 style="width: ${data.progress_percent || 0}%">
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Also update the actions cell
+                const actionsCell = document.getElementById(`actions-cell-${uploadId}`);
+                actionsCell.innerHTML = `
+                    <button onclick="cancelImport('${uploadId}')"
+                            class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors">
+                        Cancel
+                    </button>
+                `;
+
+                // Start polling for progress
+                pollProgress(uploadId);
+            }
+        })
+        .catch(err => {
+            console.error(`Error updating upload ${uploadId}:`, err);
+        });
+    });
+}
+
+// Add a debug button
+document.addEventListener('DOMContentLoaded', function() {
+    const adminHeader = document.querySelector('h1');
+    if (adminHeader) {
+        const debugButton = document.createElement('button');
+        debugButton.textContent = 'Force Update All';
+        debugButton.className = 'ml-4 bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm';
+        debugButton.onclick = forceUpdateAllUploads;
+
+        adminHeader.appendChild(debugButton);
+    }
+});
+
+function debugUI() {
+    console.log('Debugging UI...');
+
+    // Get all upload IDs
+    const uploadRows = document.querySelectorAll('tr[data-upload-id]');
+    uploadRows.forEach(row => {
+        const uploadId = row.dataset.uploadId;
+        console.log(`Upload ID: ${uploadId}`);
+
+        // Get status cell
+        const statusCell = document.getElementById(`status-cell-${uploadId}`);
+        console.log(`Status cell for ${uploadId}:`, statusCell);
+        console.log(`Status cell HTML: ${statusCell.innerHTML}`);
+        console.log(`Status cell outerHTML: ${statusCell.outerHTML}`);
+
+        // Get computed style
+        const statusSpan = document.getElementById(`status-${uploadId}`);
+        if (statusSpan) {
+            const style = window.getComputedStyle(statusSpan);
+            console.log(`Status span computed style:`, {
+                backgroundColor: style.backgroundColor,
+                color: style.color,
+                padding: style.padding,
+                borderRadius: style.borderRadius,
+                fontSize: style.fontSize
+            });
+        }
+
+        // Check if the progress bar exists
+        const progressBar = document.getElementById(`progress-${uploadId}`);
+        if (progressBar) {
+            console.log(`Progress bar exists for ${uploadId}`);
+            console.log(`Progress bar style: ${progressBar.getAttribute('style')}`);
+        } else {
+            console.log(`Progress bar DOES NOT exist for ${uploadId}`);
+        }
+
+        // Force update the UI based on the current status
+        fetch(`/admin/import/${uploadId}/status`)
+        .then(response => response.json())
+        .then(data => {
+            console.log(`Current status from API for ${uploadId}:`, data);
+
+            // Force update the UI
+            if (data.status.toLowerCase() === 'extracting') {
+                statusCell.innerHTML = `
+                    <div class="space-y-2">
+                        <span id="status-${uploadId}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                        <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${data.progress || 'Extracting ZIP file...'}</div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                            <div id="progress-${uploadId}"
+                                 class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                 style="width: ${data.progress_percent || 0}%">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        })
+        .catch(err => {
+            console.error('Error fetching status for', uploadId, ':', err);
+        });
+    });
+
+    alert('Debug info logged to console. Press F12 to view.');
+}
+
+// Add debug button when the page loads
+document.addEventListener('DOMContentLoaded', function() {
+    const adminHeader = document.querySelector('h1');
+    if (adminHeader) {
+        const debugButton = document.createElement('button');
+        debugButton.textContent = 'Debug UI';
+        debugButton.className = 'ml-4 bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm';
+        debugButton.onclick = debugUI;
+
+        adminHeader.appendChild(debugButton);
+    }
+});
+
+function updateActions(uploadId, status) {
+    const actionsCell = document.getElementById(`actions-cell-${uploadId}`);
+    if (!actionsCell) return;
+
+    // Status will be lowercase from the server
+    // Convert status to lowercase for case-insensitive comparison
+    status = status.toLowerCase();
+
+    if (status === "extracting" || status === "importing") {
+        actionsCell.innerHTML = `
+            <button onclick="cancelImport('${uploadId}')"
+                    class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors">
+                Cancel
+            </button>
+        `;
+    } else if (status === "imported") {
+        actionsCell.innerHTML = `
+            <form method="post" action="/admin/embeddings/train/${uploadId}" class="inline">
+                <button type="submit"
+                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors">
+                    Train Embeddings
+                </button>
+            </form>
+        `;
+    } else if (status === "uploaded" || status === "extracted") {
+        actionsCell.innerHTML = `
+            <button onclick="startImport('${uploadId}')"
+                    class="text-white bg-[#1264a3] hover:bg-[#0b4d82] px-3 py-1 rounded text-sm transition-colors">
+                Start Import
+            </button>
+        `;
+    } else if (status === "error" || status === "cancelled") {
+        // No action buttons needed, they're included in the status cell
+    } else {
+        // Default case
+        actionsCell.innerHTML = '';
+    }
+}
+
+const UI = {
+    updateStatus: function(uploadId, status, progress = '', progressPercent = 0, errorMessage = '') {
+        const statusCell = document.getElementById(`status-cell-${uploadId}`);
+        if (!statusCell) return;
+
+        // Convert status to lowercase for case-insensitive comparison
+        const statusLower = status.toLowerCase();
+
+        if (statusLower === "extracting") {
+            statusCell.innerHTML = `
+                <div class="space-y-2">
+                    <span id="status-${uploadId}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                    <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${progress || 'Extracting ZIP file...'}</div>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                        <div id="progress-${uploadId}"
+                             class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                             style="width: ${progressPercent || 0}%">
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (statusLower === "importing") {
+            statusCell.innerHTML = `
+                <div class="space-y-2">
+                    <span id="status-${uploadId}" class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Importing</span>
+                    <div id="progress-text-${uploadId}" class="text-sm text-gray-400 mt-1">${progress || 'Importing data...'}</div>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                        <div id="progress-${uploadId}"
+                             class="bg-green-600 h-2.5 rounded-full transition-all duration-300"
+                             style="width: ${progressPercent || 0}%">
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (statusLower === "imported") {
+            statusCell.innerHTML = `
+                <span class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Import Complete</span>
+            `;
+        } else if (statusLower === "uploaded") {
+            statusCell.innerHTML = `
+                <span id="status-${uploadId}" class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+            `;
+        } else if (statusLower === "extracted") {
+            statusCell.innerHTML = `
+                <span id="status-${uploadId}" class="bg-blue-500 text-blue-100 px-2 py-1 rounded-full text-xs">Extracted</span>
+                <div class="text-sm text-gray-400 mt-1">Ready for import</div>
+            `;
+        } else if (statusLower === "error") {
+            statusCell.innerHTML = `
+                <div class="space-y-2">
+                    <span class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Error</span>
+                    <div class="text-red-400 text-xs mt-1">${errorMessage || 'Unknown error'}</div>
+                    <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('${uploadId}')">
+                        Restart Import
+                    </button>
+                </div>
+            `;
+        } else if (statusLower === "cancelled") {
+            statusCell.innerHTML = `
+                <div class="space-y-2">
+                    <span class="bg-yellow-500 text-yellow-100 px-2 py-1 rounded-full text-xs">Cancelled</span>
+                    <button class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-3 py-1 rounded text-sm transition-colors" onclick="restartImport('${uploadId}')">
+                        Restart Import
+                    </button>
+                </div>
+            `;
+        } else {
+            // Default case for any other status
+            statusCell.innerHTML = `
+                <span id="status-${uploadId}" class="bg-gray-800 text-gray-300 px-2 py-1 rounded-full text-xs">${status}</span>
+            `;
+        }
+
+        // Update the actions cell based on the status
+        updateActions(uploadId, status);
+    }
+}
+</script>
+{% endblock %}
+{% endblock %}
