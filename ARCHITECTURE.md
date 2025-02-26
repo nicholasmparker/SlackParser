@@ -11,6 +11,22 @@ All collections live in the `slack_data` database by default (configurable via `
      - `text` (text index)
      - `conversation_id`
      - `ts`
+   - Message Fields:
+     1. `_id`: ObjectId - Unique message ID
+     2. `conversation_id`: string - Channel or DM ID
+     3. `user`: string - User ID (e.g. U7WB86M7W)
+     4. `username`: string - User's display name
+     5. `text`: string - Message content
+     6. `ts`: datetime - Message timestamp
+     7. `type`: string - Message type (message, join, archive, file_share, system)
+     8. `is_edited`: boolean - Whether the message was edited
+     9. `reactions`: array - List of reactions to the message
+     10. `files`: array - List of attached files
+     11. `thread_ts`: string - Parent thread timestamp (if reply)
+     12. `reply_count`: integer - Number of replies
+     13. `reply_users_count`: integer - Number of users who replied
+
+     Note: The web UI expects `user_name` but the parser provides `username`. The aggregation pipeline handles both fields.
 
 2. `conversations`
    - Channel and DM metadata
@@ -227,6 +243,28 @@ All timestamps are stored in MongoDB as UTC datetime objects.
 
 ## Database Schema
 
+### Messages Collection
+Messages in MongoDB have the following fields:
+1. `_id`: ObjectId - Unique message ID
+2. `conversation_id`: string - Channel or DM ID
+3. `user`: string - User ID (e.g. U7WB86M7W)
+4. `username`: string - User's display name (from parser)
+5. `user_name`: string - User's display name (for template)
+6. `text`: string - Message content
+7. `ts`: datetime - Message timestamp (from parser)
+8. `timestamp`: datetime - Message timestamp (for aggregation)
+9. `type`: string - Message type (message, join, archive, file_share, system)
+10. `is_edited`: boolean - Whether the message was edited
+11. `reactions`: array - List of reactions to the message
+12. `files`: array - List of attached files
+13. `thread_ts`: string - Parent thread timestamp (if reply)
+14. `reply_count`: integer - Number of replies
+15. `reply_users_count`: integer - Number of users who replied
+
+Note: Both `username` and `user_name` fields contain the same value, but are used in different contexts:
+- `username` is set by the parser when importing messages
+- `user_name` is set by the aggregation pipeline for template rendering
+
 1. `uploads` Collection
    - `_id`: ObjectId - Unique upload ID
    - `filename`: string - Original filename
@@ -264,20 +302,7 @@ All timestamps are stored in MongoDB as UTC datetime objects.
    - `message_count`: int - Total number of messages
    - Note: Full user details not available in export
 
-4. `messages` Collection
-   - `_id`: ObjectId - Unique message ID
-   - `channel_id`: string - Channel/DM where message was sent
-   - `username`: string - Username who sent message
-   - `text`: string - Message text
-   - `ts`: datetime - Message timestamp
-   - `thread_ts`: datetime - Parent thread timestamp if reply
-   - `is_edited`: boolean - Whether message was edited
-   - `reactions`: array - Array of {emoji: string, users: array}
-   - `type`: string - "message", "system", "archive", or "file"
-   - `system_action`: string - For system messages (joined, left, etc)
-   - `file_id`: string - For file messages, the shared file ID
-
-5. `failed_imports` Collection
+4. `failed_imports` Collection
    - `_id`: ObjectId - Unique failure ID
    - `upload_id`: ObjectId - Reference to upload
    - `file_path`: string - Path to file that failed

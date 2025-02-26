@@ -51,7 +51,7 @@ def timedelta_filter(value):
     """Format a timestamp as a human-readable time delta"""
     if not value:
         return ""
-    
+
     if isinstance(value, datetime):
         dt = value
     elif isinstance(value, str):
@@ -65,7 +65,7 @@ def timedelta_filter(value):
             dt = datetime.fromtimestamp(value)
         except (TypeError, ValueError):
             return str(value)
-    
+
     return dt.strftime("%B %d, %Y")
 
 def from_json_filter(value):
@@ -79,7 +79,7 @@ def from_json_filter(value):
 
 def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
     """Format a date according to the given format.
-    
+
     For messages, we follow Slack's display logic:
     - Messages from today: show only time (3:56 PM)
     - Messages from this week: show day and time (Wed 3:56 PM)
@@ -87,7 +87,7 @@ def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
     """
     if not value:
         return ""
-        
+
     try:
         # Convert timestamp to datetime if needed
         if isinstance(value, str):
@@ -100,27 +100,27 @@ def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
                     value = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     return value
-                
+
         if isinstance(value, (int, float)):
             value = datetime.fromtimestamp(float(value))
-            
+
         if not isinstance(value, datetime):
             return str(value)
-            
+
         now = datetime.now()
-        
+
         # Messages from today
         if value.date() == now.date():
             return value.strftime("%I:%M %p").lstrip("0")
-            
+
         # Messages from this week
         elif (now - value).days < 7:
             return value.strftime("%a %I:%M %p").lstrip("0")
-            
+
         # Older messages
         else:
             return value.strftime("%b %d, %I:%M %p").lstrip("0")
-            
+
     except Exception as e:
         print(f"Error formatting timestamp: {str(e)}")
         return str(value)
@@ -134,26 +134,21 @@ app.embeddings = EmbeddingService()
 
 # MongoDB connection
 @app.on_event("startup")
-async def startup_db_client():
-    """Initialize MongoDB connection on startup"""
+def startup_db_client():
     try:
+        # Initialize MongoDB client
         app.mongodb_client = AsyncIOMotorClient(MONGO_URL)
         app.db = app.mongodb_client[MONGO_DB]
         logger.info(f"Connected to MongoDB at {MONGO_URL}")
-        
+
+        # Initialize ChromaDB client
+        app.embeddings.initialize()
+
         # Create indexes
-        await app.db.messages.create_index("conversation_id")
-        await app.db.messages.create_index("ts")
-        await app.db.messages.create_index("timestamp")
-        await app.db.messages.create_index([("text", "text")])
-        print("Created database indexes")
-        
-        # Initialize embeddings service
-        await app.embeddings.initialize()
-        logger.info("Connected to Chroma")
-        
+        asyncio.create_task(setup_indexes())
+
     except Exception as e:
-        logger.error(f"Error connecting to database: {str(e)}")
+        logger.error(f"Error during startup: {str(e)}")
         raise e
 
 @app.on_event("shutdown")
@@ -177,19 +172,13 @@ async def setup_indexes():
     except Exception as e:
         print(f"Error creating indexes: {e}")
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database connection and create indexes"""
-    await startup_db_client()
-    await setup_indexes()
-
 @app.get("/")
 async def home(request: Request):
     """Render the home page with stats about the Slack workspace"""
     try:
         # Get system stats
         stats = await get_system_stats()
-        
+
         # Render template with stats
         return templates.TemplateResponse(
             "home.html",
@@ -217,7 +206,7 @@ async def view_conversation(
     ts: Optional[float] = None
 ):
     page_size = 50
-    
+
     # Get conversation metadata with display name
     pipeline = [
         {"$match": {"_id": conversation_id}},
@@ -261,12 +250,12 @@ async def view_conversation(
     conversation = await app.db.conversations.aggregate(pipeline).next()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
+
     # Build query
     query = {"conversation_id": conversation_id}
     if q:
         query["$text"] = {"$search": q}
-    
+
     # If we have a timestamp in the URL, find which page it's on
     if ts is not None:
         # Convert float timestamp to integer for matching
@@ -278,14 +267,14 @@ async def view_conversation(
         })
         # Calculate which page this message is on
         page = (count_before // page_size) + 1
-    
+
     skip = (page - 1) * page_size
-    
+
     # Get messages with sorting
     sort = [("timestamp", -1)]
     if q:  # If searching, also sort by text score
         sort.insert(0, ("score", {"$meta": "textScore"}))
-    
+
     # Get messages and join with users collection
     pipeline = [
         {"$match": query},
@@ -299,22 +288,21 @@ async def view_conversation(
             "foreignField": "_id",
             "as": "user_info"
         }},
-        # Add user display info
+        # Add user_name field if not present
         {"$addFields": {
-            "user": {
-                "$cond": {
-                    "if": {"$regexMatch": {"input": "$user", "regex": "^U\\d+"}},
-                    "then": {"$substrCP": ["$user", 0, 2]},  # Just take U7 from U7WB86M7W
-                    "else": "$user"
-                }
-            },
             "user_name": {
                 "$ifNull": [
+                    # Try username from message
+                    "$username",
+                    # Try user_name from message
+                    "$user_name",
+                    # Try user info lookup
                     {"$arrayElemAt": ["$user_info.name", 0]},
+                    # Fallback to user ID prefix
                     {
                         "$cond": {
                             "if": {"$regexMatch": {"input": "$user", "regex": "^U\\d+"}},
-                            "then": {"$substrCP": ["$user", 0, 2]},  # Just take U7 from U7WB86M7W
+                            "then": {"$substrCP": ["$user", 0, 2]},
                             "else": "$user"
                         }
                     }
@@ -326,13 +314,13 @@ async def view_conversation(
             "user_info": 0
         }}
     ]
-    
+
     messages = await app.db.messages.aggregate(pipeline).to_list(length=page_size)
-    
+
     # Get total count for pagination
     total_messages = await app.db.messages.count_documents(query)
     total_pages = (total_messages + page_size - 1) // page_size
-    
+
     return templates.TemplateResponse(
         "conversation.html",
         {
@@ -354,14 +342,14 @@ async def conversations(
 ):
     page_size = 20
     skip = (page - 1) * page_size
-    
+
     # Build query
     query = {}
     if q:
         query["name"] = {"$regex": q, "$options": "i"}
     if type != "all":
         query["type"] = type
-        
+
     # Get conversations with users for DMs
     pipeline = [
         {"$match": query},
@@ -407,10 +395,10 @@ async def conversations(
             "latest_user": {"$last": "$user"}
         }}
     ]).to_list(None)
-    
+
     # Convert to dict for O(1) lookup
     message_data = {str(m["_id"]): m for m in message_counts}
-    
+
     # Merge data
     for conv in conversations:
         conv_id = str(conv["_id"])
@@ -425,11 +413,11 @@ async def conversations(
         else:
             conv["message_count"] = 0
             conv["latest_message"] = None
-    
+
     # Get total count for pagination
     total = await app.db.conversations.count_documents(query)
     total_pages = (total + page_size - 1) // page_size
-    
+
     return templates.TemplateResponse(
         "conversations.html",
         {
@@ -448,10 +436,10 @@ async def files(request: Request, q: str = ""):
     query = {}
     if q:
         query["name"] = {"$regex": q, "$options": "i"}
-    
+
     # Get files matching query
     files = await app.db.files.find(query).sort("name", 1).to_list(length=None)
-    
+
     return templates.TemplateResponse("files.html", {
         "request": request,
         "files": files,
@@ -466,25 +454,25 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
             # Initialize embeddings service if not already initialized
             if not app.embeddings:
                 app.embeddings = EmbeddingService()
-                await app.embeddings.initialize()
-            
+                app.embeddings.initialize()
+
             # Perform semantic search
             search_results = await app.embeddings.search(
                 query=q,
                 limit=50,
                 hybrid_alpha=hybrid_alpha
             )
-            
+
             # Extract conversation IDs from results
             conversation_ids = list(set(r["metadata"]["channel"] for r in search_results))
-            
+
             # Get conversation details
             conversations = await app.db.conversations.find(
                 {"_id": {"$in": conversation_ids}},
                 {"name": 1, "type": 1}
             ).to_list(None)
             conv_map = {str(c["_id"]): c for c in conversations}
-            
+
             # Format results for template
             results = []
             for r in search_results:
@@ -493,7 +481,7 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
                 except (ValueError, TypeError):
                     ts = 0
                     logger.warning(f"Could not parse timestamp: {r['metadata']['timestamp']}")
-                
+
                 results.append({
                     "text": r["text"],
                     "conversation": conv_map.get(str(r["metadata"]["channel"]), {"name": "Unknown", "type": "unknown"}),
@@ -503,7 +491,7 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
                     "score": r["similarity"],
                     "keyword_match": r.get("keyword_match", False)
                 })
-            
+
             # Sort results by score
             results.sort(key=lambda x: x["score"], reverse=True)
         except Exception as e:
@@ -536,7 +524,7 @@ async def semantic_search(
     logger = logging.getLogger(__name__)
     try:
         logger.info(f"Searching with query: {query}")
-        
+
         # Perform hybrid search
         results = await app.embeddings.search(
             query=query,
@@ -549,14 +537,14 @@ async def semantic_search(
             filter_in_thread=filter_in_thread,
             filter_date_range=filter_date_range
         )
-        
+
         # Get conversation details for each result
         for result in results:
             conversation = await app.db.conversations.find_one({"_id": result["conversation_id"]})
             result["conversation"] = conversation
-        
+
         return {"results": results}
-        
+
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -565,13 +553,13 @@ async def semantic_search(
 async def admin_page(request: Request):
     """Admin dashboard"""
     stats = await get_system_stats()
-    
+
     # Get recent uploads
     uploads = []
     async for upload in app.db.uploads.find().sort("created_at", -1):
         # Convert ObjectId to string
         upload["_id"] = str(upload["_id"])
-        
+
         # Ensure required fields exist
         if "size" not in upload:
             upload["size"] = 0
@@ -587,11 +575,11 @@ async def admin_page(request: Request):
             upload["progress_percent"] = 0
         if "error" not in upload:
             upload["error"] = None
-            
+
         # Debug logging
         print(f"Upload: {upload}")
         uploads.append(upload)
-    
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -608,13 +596,13 @@ async def start_import(request: Request, upload_id: str):
         db = request.app.db
         upload_id = ObjectId(upload_id)
         upload = await db.uploads.find_one({"_id": upload_id})
-        
+
         if not upload:
             return RedirectResponse(
                 url=f"/admin?error=upload_not_found",
                 status_code=303
             )
-            
+
         # Only allow starting import if file is in a valid state
         valid_states = ["UPLOADED", "cancelled", "error", "complete", "IMPORTING", "extracting"]
         if upload["status"] not in valid_states:
@@ -622,7 +610,7 @@ async def start_import(request: Request, upload_id: str):
                 url=f"/admin?error=invalid_state&message=Cannot start import for file in state: {upload['status']}",
                 status_code=303
             )
-            
+
         # Allow reimport if previous import had 0 messages or failed
         if upload["status"] == "complete":
             if upload.get("progress") and "Imported 0" not in upload["progress"]:
@@ -630,7 +618,7 @@ async def start_import(request: Request, upload_id: str):
                     url=f"/admin?error=already_imported",
                     status_code=303
                 )
-        
+
         # Reset import state
         await db.uploads.update_one(
             {"_id": upload_id},
@@ -642,13 +630,13 @@ async def start_import(request: Request, upload_id: str):
                 "updated_at": datetime.utcnow()
             }}
         )
-        
+
         # Start import in background
         print(f"Creating background task for import of {upload['filename']}")
         task = asyncio.create_task(
             import_data.import_slack_export(db, Path(upload["file_path"]), str(upload_id))
         )
-        
+
         # Add error handling for the background task
         def handle_import_completion(task):
             try:
@@ -659,20 +647,20 @@ async def start_import(request: Request, upload_id: str):
                     db.uploads.update_one(
                         {"_id": upload_id},
                         {"$set": {
-                            "status": "error", 
+                            "status": "error",
                             "error": str(e),
                             "updated_at": datetime.utcnow()
                         }}
                     )
                 )
-        
+
         task.add_done_callback(handle_import_completion)
-        
+
         return RedirectResponse(
             url=f"/admin?success=import_started",
             status_code=303
         )
-        
+
     except Exception as e:
         logger.exception("Error starting import")
         return RedirectResponse(
@@ -687,7 +675,7 @@ async def get_import_status(upload_id: str):
         upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
-        
+
         return {
             "status": upload.get("status", "unknown"),
             "progress": upload.get("progress", ""),
@@ -704,13 +692,13 @@ async def cancel_import(request: Request, upload_id: str):
         db = request.app.db
         upload_id = ObjectId(upload_id)
         upload = await db.uploads.find_one({"_id": upload_id})
-        
+
         if not upload:
             return JSONResponse(
                 status_code=404,
                 content={"detail": "Upload not found"}
             )
-            
+
         # Only allow cancelling if in an active state
         active_states = ["extracting", "importing_channels", "importing_dms", "generating_embeddings", "IMPORTING"]
         if upload["status"] not in active_states:
@@ -718,7 +706,7 @@ async def cancel_import(request: Request, upload_id: str):
                 status_code=400,
                 content={"detail": f"Cannot cancel import that is not in progress. Current status: {upload['status']}"}
             )
-            
+
         # Update status to cancelled
         await db.uploads.update_one(
             {"_id": upload_id},
@@ -732,9 +720,9 @@ async def cancel_import(request: Request, upload_id: str):
                 }
             }
         )
-        
+
         return {"status": "cancelled"}
-        
+
     except Exception as e:
         logger.exception("Error cancelling import")
         return JSONResponse(
@@ -748,12 +736,12 @@ async def get_failed_messages(request: Request, upload_id: str):
     try:
         db = request.app.db
         upload_id = ObjectId(upload_id)
-        
+
         # Get the failed messages
         failed_messages = await db.failed_messages.find(
             {"upload_id": str(upload_id)}
         ).to_list(length=None)
-        
+
         # Group by channel
         grouped = {}
         for msg in failed_messages:
@@ -761,7 +749,7 @@ async def get_failed_messages(request: Request, upload_id: str):
             if channel not in grouped:
                 grouped[channel] = []
             grouped[channel].append(msg)
-            
+
         return templates.TemplateResponse(
             "failed_messages.html",
             {
@@ -770,7 +758,7 @@ async def get_failed_messages(request: Request, upload_id: str):
                 "channels": grouped
             }
         )
-        
+
     except Exception as e:
         logger.exception("Error getting failed messages")
         return JSONResponse(
@@ -813,14 +801,14 @@ async def import_new_messages(request: Request):
     try:
         # Import new messages
         new_messages = await import_data.import_new_messages()
-        
+
         # Record import status
         await app.db.import_status.insert_one({
             "timestamp": datetime.now(),
             "messages_imported": new_messages,
             "status": "success"
         })
-        
+
         return RedirectResponse(
             url="/admin",
             status_code=303
@@ -841,7 +829,7 @@ async def flush_data(request: Request):
         await app.db.messages.drop()
         await app.db.conversations.drop()
         await app.db.import_status.drop()
-        
+
         return RedirectResponse(
             url="/admin",
             status_code=303
@@ -863,16 +851,16 @@ async def clear_data(request: Request):
         clear_embeddings = form.get("clear_embeddings") == "on"
         clear_uploads = form.get("clear_uploads") == "on"
         clear_conversations = form.get("clear_conversations") == "on"
-        
+
         if clear_messages:
             await app.db.messages.drop()
             print("Cleared messages")
-            
+
         if clear_embeddings:
             # Clear Chroma collection
             await app.embeddings.clear_collection()
             print("Cleared embeddings")
-            
+
         if clear_uploads:
             await app.db.uploads.drop()
             # Clear upload directory
@@ -892,7 +880,7 @@ async def clear_data(request: Request):
         if clear_conversations:
             await app.db.conversations.drop()
             print("Cleared conversations")
-            
+
         return RedirectResponse(
             url="/admin",
             status_code=303
@@ -909,11 +897,11 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     """Handle file upload"""
     try:
         logging.info(f"Starting upload of {file.filename}")
-        
+
         # Validate file
         if not file.filename or not file.filename.lower().endswith('.zip'):
             raise HTTPException(status_code=400, detail="Only ZIP files are allowed")
-        
+
         # Create upload record
         upload_id = ObjectId()
         await app.db.uploads.insert_one({
@@ -924,29 +912,29 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             "size": 0,
             "uploaded_size": 0
         })
-        
+
         logging.info(f"Created upload record with ID {upload_id}")
-        
+
         # Ensure upload directory exists
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        
+
         # Save file with unique name to avoid conflicts
         safe_filename = f"{upload_id}_{secure_filename(file.filename)}"
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
-        
+
         # Save file in chunks to handle large files
         total_size = 0
         last_update = 0
-        
+
         with open(file_path, "wb") as buffer:
             while True:
                 chunk = await file.read(8 * 1024 * 1024)  # 8MB chunks
                 if not chunk:
                     break
-                    
+
                 buffer.write(chunk)
                 total_size += len(chunk)
-                
+
                 # Only update DB every 100MB to reduce load
                 if total_size - last_update > 100 * 1024 * 1024:
                     await app.db.uploads.update_one(
@@ -957,7 +945,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
                         }}
                     )
                     last_update = total_size
-            
+
         # Update final status
         await app.db.uploads.update_one(
             {"_id": upload_id},
@@ -969,31 +957,25 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
                 "updated_at": datetime.utcnow()
             }}
         )
-        
+
         logging.info(f"Upload complete: {total_size} bytes")
-        
+
         return JSONResponse({
             "id": str(upload_id),
             "status": "UPLOADED",
             "size": total_size
         })
-        
+
     except Exception as e:
         logging.error(f"Upload error: {str(e)}", exc_info=True)
-        # Try to clean up failed upload
         try:
-            if 'file_path' in locals():
-                os.unlink(file_path)
-        except:
-            pass
+            os.unlink(file_path)
+        except FileNotFoundError:
+            logger.warning(f"Could not delete file {file_path}, it does not exist")
         try:
-            if 'upload_id' in locals():
-                await app.db.uploads.update_one(
-                    {"_id": upload_id},
-                    {"$set": {"status": "ERROR", "error": str(e)}}
-                )
-        except:
-            pass
+            await app.db.uploads.delete_one({"_id": ObjectId(upload_id)})
+        except Exception as e:
+            logger.error(f"Error deleting upload record: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/search")
@@ -1004,13 +986,13 @@ async def api_search(
 ):
     try:
         logger.info(f"API Search request: query={query}, hybrid_alpha={hybrid_alpha}, limit={limit}")
-        
+
         # Initialize embeddings service if not already initialized
         if not hasattr(app, 'embeddings') or not app.embeddings:
             logger.info("Initializing embeddings service")
             app.embeddings = EmbeddingService()
-            await app.embeddings.initialize()
-        
+            app.embeddings.initialize()
+
         # Perform semantic search
         logger.info("Performing semantic search")
         search_results = await app.embeddings.search(
@@ -1018,22 +1000,22 @@ async def api_search(
             limit=limit,
             hybrid_alpha=hybrid_alpha
         )
-        
+
         # Extract conversation IDs from results, skipping any without conversation_id
         logger.info(f"Got {len(search_results)} results")
         conversation_ids = list(set(
-            r["metadata"]["conversation_id"] 
-            for r in search_results 
+            r["metadata"]["conversation_id"]
+            for r in search_results
             if "metadata" in r and "conversation_id" in r["metadata"]
         ))
-        
+
         # Get conversation details
         conversations = await app.db.conversations.find(
             {"_id": {"$in": conversation_ids}},
             {"name": 1, "type": 1}
         ).to_list(None)
         conv_map = {str(c["_id"]): c for c in conversations}
-        
+
         # Format results for template
         results = []
         for r in search_results:
@@ -1041,13 +1023,13 @@ async def api_search(
             if "metadata" not in r or "conversation_id" not in r["metadata"]:
                 logger.warning(f"Skipping result without proper metadata: {r}")
                 continue
-                
+
             try:
                 ts = float(r["metadata"]["timestamp"]) if r["metadata"]["timestamp"] and r["metadata"]["timestamp"].replace('.','').isdigit() else 0
             except (ValueError, TypeError):
                 ts = 0
                 logger.warning(f"Could not parse timestamp: {r['metadata']['timestamp']}")
-            
+
             results.append({
                 "text": r["text"],
                 "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
@@ -1057,10 +1039,10 @@ async def api_search(
                 "score": r["similarity"],
                 "keyword_match": r.get("keyword_match", False)
             })
-        
+
         # Sort results by score
         results.sort(key=lambda x: x["score"], reverse=True)
-        
+
         logger.info("Search completed successfully")
         return {"results": results}
     except Exception as e:
@@ -1075,15 +1057,15 @@ async def train_embeddings(request: Request, upload_id: str):
         if not hasattr(app, 'embeddings') or not app.embeddings:
             logger.info("Initializing embeddings service")
             app.embeddings = EmbeddingService()
-            await app.embeddings.initialize()
-            
+            app.embeddings.initialize()
+
         # Get import status from uploads collection
         logger.info(f"Looking for upload {upload_id} in uploads collection")
         query = {"_id": ObjectId(upload_id)}
         logger.info(f"Query: {query}")
         import_status = await app.db.uploads.find_one(query)
         logger.info(f"Found import status: {import_status}")
-        
+
         if not import_status:
             logger.error(f"Import {upload_id} not found in uploads collection")
             raise HTTPException(status_code=404, detail="Import not found")
@@ -1112,7 +1094,7 @@ async def train_embeddings(request: Request, upload_id: str):
             sample = await app.db.messages.find_one()
             logger.info(f"Sample message: {sample}")
             raise Exception("No conversations found in database")
-            
+
         conversation_ids = [conv["_id"] for conv in conversations]
         logger.info(f"Found {len(conversation_ids)} conversations: {conversation_ids}")
 
@@ -1163,7 +1145,7 @@ async def reset_embeddings(request: Request, upload_id: str):
         import_status = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
         if not import_status:
             raise HTTPException(status_code=404, detail="Import not found")
-            
+
         # Reset status
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1176,12 +1158,12 @@ async def reset_embeddings(request: Request, upload_id: str):
                 }
             }
         )
-        
+
         # Reset ChromaDB collection
         await app.embeddings.reset_collection()
-        
+
         return {"status": "success"}
-        
+
     except Exception as e:
         logger.error(f"Error resetting embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1196,7 +1178,7 @@ async def health_check():
         "ollama": "unknown",
         "timestamp": datetime.utcnow().isoformat()
     }
-    
+
     try:
         # Check MongoDB
         await app.db.command("ping")
@@ -1204,12 +1186,12 @@ async def health_check():
     except Exception as e:
         status["mongodb"] = f"unhealthy: {str(e)}"
         status["status"] = "unhealthy"
-    
+
     try:
         # Check Chroma
         if not app.embeddings:
             app.embeddings = EmbeddingService()
-            await app.embeddings.initialize()
+            app.embeddings.initialize()
         collection = app.embeddings.collection
         if not collection:
             raise ValueError("Chroma collection not initialized")
@@ -1217,7 +1199,7 @@ async def health_check():
     except Exception as e:
         status["chroma"] = f"unhealthy: {str(e)}"
         status["status"] = "unhealthy"
-    
+
     try:
         # Check Ollama
         async with aiohttp.ClientSession() as session:
@@ -1228,27 +1210,27 @@ async def health_check():
     except Exception as e:
         status["ollama"] = f"unhealthy: {str(e)}"
         status["status"] = "unhealthy"
-    
+
     return status
 
 @app.post("/api/restart_import/{upload_id}")
 async def restart_import(upload_id: str):
-    """Restart a failed import"""
+    """Restart a failed or uploaded import"""
     try:
         # Get the upload record
         upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
-            
-        # Only allow restarting failed imports
-        if upload["status"] != "ERROR":
-            raise HTTPException(status_code=400, detail="Can only restart failed imports")
-            
+
+        # Only allow restarting failed or uploaded imports
+        if upload["status"] not in ["ERROR", "UPLOADED"]:
+            raise HTTPException(status_code=400, detail="Can only restart failed or uploaded imports")
+
         # Start the import
         file_path = Path(upload["file_path"])
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Upload file not found")
-            
+
         # Update status to start fresh
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1260,12 +1242,33 @@ async def restart_import(upload_id: str):
                 "updated_at": datetime.utcnow()
             }}
         )
-        
+
         # Start import in background
-        background_tasks.add_task(import_data.import_slack_export, app.db, file_path, upload_id)
-        
+        task = asyncio.create_task(
+            import_data.import_slack_export(app.db, file_path, upload_id)
+        )
+
+        # Add error handling for the background task
+        def handle_import_completion(task):
+            try:
+                task.result()  # This will raise any exceptions from the task
+            except Exception as e:
+                logger.exception("Import failed")
+                asyncio.create_task(
+                    app.db.uploads.update_one(
+                        {"_id": ObjectId(upload_id)},
+                        {"$set": {
+                            "status": "ERROR",
+                            "error": str(e),
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                )
+
+        task.add_done_callback(handle_import_completion)
+
         return {"status": "success"}
-        
+
     except Exception as e:
         logger.error(f"Error restarting import: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
