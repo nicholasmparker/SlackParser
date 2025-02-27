@@ -12,7 +12,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 import json
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Body, Query
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Body, Query, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,6 +21,7 @@ from starlette.middleware.cors import CORSMiddleware
 # Import services
 from app.services.main_service import MainService
 from app.db.mongo import get_db, get_sync_db
+from app.services.search_service import SearchService  # Import SearchService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -467,50 +468,20 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
     results = []
     if q:
         try:
-            # Initialize embeddings service if not already initialized
-            if not hasattr(app, 'embeddings') or app.embeddings is None:
-                from app.embeddings import EmbeddingService
-                app.embeddings = EmbeddingService()
-                app.embeddings.initialize()
+            # Initialize search service if not already initialized
+            if not hasattr(app, 'service') or not hasattr(app.service, 'search_service'):
+                logger.error("Search service not initialized")
+                raise HTTPException(status_code=500, detail="Search service not initialized")
 
             # Perform semantic search
-            search_results = await app.embeddings.search(
+            results = await app.service.search_service.search(
                 query=q,
                 limit=50,
                 hybrid_alpha=hybrid_alpha
             )
 
-            # Extract conversation IDs from results
-            conversation_ids = list(set(r["metadata"]["conversation_id"] for r in search_results))
+            # No need to reformat the results, they already have all the information we need
 
-            # Get conversation details
-            conversations = await app.db.conversations.find(
-                {"_id": {"$in": conversation_ids}},
-                {"name": 1, "type": 1}
-            ).to_list(None)
-            conv_map = {str(c["_id"]): c for c in conversations}
-
-            # Format results for template
-            results = []
-            for r in search_results:
-                try:
-                    ts = float(r["metadata"]["timestamp"]) if r["metadata"]["timestamp"] and r["metadata"]["timestamp"].replace('.','').isdigit() else 0
-                except (ValueError, TypeError):
-                    ts = 0
-                    logging.warning(f"Could not parse timestamp: {r['metadata']['timestamp']}")
-
-                results.append({
-                    "text": r["text"],
-                    "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
-                    "conversation_id": r["metadata"]["conversation_id"],
-                    "user": r["metadata"]["user"],
-                    "ts": ts,
-                    "score": r["similarity"],
-                    "keyword_match": r.get("keyword_match", False)
-                })
-
-            # Sort results by score
-            results.sort(key=lambda x: x["score"], reverse=True)
         except Exception as e:
             logging.error(f"Error in search_page: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -589,6 +560,7 @@ async def semantic_search(
 
 @app.post("/api/v1/search")
 async def api_search(
+    request: Request,
     query: str = Body(...),
     hybrid_alpha: float = Body(0.5),
     limit: int = Body(50)
@@ -613,8 +585,11 @@ async def api_search(
                     "name": r["conversation"].get("name", "Unknown"),
                     "type": r["conversation"].get("type", "unknown")
                 },
+                "conversation_id": r["conversation_id"],
                 "user": r["user"],
+                "username": r.get("username", ""),
                 "timestamp": r["ts"],
+                "ts": r["ts"],
                 "score": r["score"]
             })
 
@@ -653,7 +628,7 @@ async def get_conversation(
 
         # Try to get conversation by channel_id first
         conversation = await app.db.conversations.find_one({"channel_id": conversation_id})
-        
+
         # If not found, try by _id (in case it's a MongoDB ObjectId)
         if not conversation:
             try:
@@ -661,7 +636,7 @@ async def get_conversation(
             except:
                 # If conversion to ObjectId fails, it's not a valid ObjectId
                 pass
-                
+
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -755,7 +730,7 @@ async def get_message_context(conversation_id: str, timestamp: float, context_si
 async def admin_start_extract(upload_id: str):
     """Start the extraction process for an upload."""
     try:
-        # Get upload
+        # Get the upload record
         upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
         if not upload:
             return JSONResponse(
@@ -797,7 +772,7 @@ async def admin_start_import(upload_id: str):
 
         # Start import process
         result = await app.service.import_service.start_import_process(upload_id)
-        
+
         return JSONResponse({"success": True, "message": "Import started"})
     except Exception as e:
         logger.error(f"Import error: {str(e)}", exc_info=True)
@@ -806,16 +781,104 @@ async def admin_start_import(upload_id: str):
             content={"success": False, "error": f"Error starting import: {str(e)}"}
         )
 
-@app.get("/admin/clear-all")
-async def admin_clear_all():
-    """Clear all data from the database and file system."""
+@app.post("/admin/clear-all")
+async def admin_clear_all_post(request: Request):
+    """Clear all data from the database and file system (POST method)"""
     try:
         main_service = MainService(db=app.db)
         result = await main_service.clear_all_data()
-        return result
+        return {"status": "success", "message": "All data has been cleared"}
     except Exception as e:
         logger.error(f"Error clearing data: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error clearing data: {str(e)}")
+
+@app.post("/admin/embeddings/train/{upload_id}")
+async def admin_train_embeddings(request: Request, upload_id: str):
+    """Train embeddings for all messages from an import"""
+    try:
+        # Get the upload record
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+
+        # Update status to TRAINING
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {
+                "$set": {
+                    "status": "TRAINING",
+                    "progress": "Starting training...",
+                    "progress_percent": 0,
+                    "training_started": datetime.utcnow(),
+                    "error_message": None
+                }
+            }
+        )
+
+        # Start the training process in a background task
+        import subprocess
+        import sys
+        import os
+
+        # Run the train_embeddings.py script as a subprocess
+        cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "train_embeddings.py")]
+        subprocess.Popen(cmd)
+
+        return {"status": "success", "message": "Training started"}
+    except Exception as e:
+        logger.error(f"Error starting training: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error starting training: {str(e)}")
+
+@app.post("/api/search-debug")
+async def api_search_debug(
+    request: Request,
+    query: str = Form(...),
+    limit: int = Form(50),
+    hybrid_alpha: float = Form(0.5)
+):
+    """Debug endpoint for search"""
+    try:
+        # Create search service
+        search_service = SearchService()
+
+        # Perform search
+        results = await search_service.search(query, limit, hybrid_alpha)
+
+        # Return raw results
+        return JSONResponse({
+            "raw_results": results,
+            "count": len(results),
+            "query": query
+        })
+    except Exception as e:
+        logger.error(f"Error in search: {str(e)}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/api/search-debug")
+async def search_debug(q: str = "", hybrid_alpha: float = 0.5):
+    """Debug endpoint for search results"""
+    results = []
+    if q:
+        try:
+            # Initialize search service if not already initialized
+            if not hasattr(app, 'service') or not hasattr(app.service, 'search_service'):
+                logger.error("Search service not initialized")
+                raise HTTPException(status_code=500, detail="Search service not initialized")
+
+            # Perform semantic search
+            results = await app.service.search_service.search(
+                query=q,
+                limit=50,
+                hybrid_alpha=hybrid_alpha
+            )
+
+            # Return the raw results for debugging
+            return results
+        except Exception as e:
+            logging.error(f"Error in search_debug: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return results
 
 # Run the application
 if __name__ == "__main__":

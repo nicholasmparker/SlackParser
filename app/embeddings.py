@@ -24,6 +24,7 @@ class EmbeddingService:
         self.chroma_client = None
         self.collection = None
         self.collection_name = "messages"
+        self.ollama_url = "http://localhost:11434"  # Default Ollama URL
         self.metadata = {
             "dimension": 768,
             "hnsw:space": "cosine"
@@ -60,7 +61,7 @@ class EmbeddingService:
             raise e
 
         # Initialize Ollama client
-        self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+        self.ollama_url = os.getenv("OLLAMA_URL", self.ollama_url)
 
         # Ollama API endpoint
         self.semaphore = 5  # Max 5 concurrent requests

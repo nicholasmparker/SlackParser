@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+    /* Loading indicator styles - scoped to only affect the search page */
+    #searchLoading {
+        display: none;
+    }
+    #searchLoading.loading {
+        display: block;
+    }
+    .animate-spin {
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
+    }
+</style>
 <div class="max-w-7xl mx-auto px-4 py-4">
     <!-- Search Info -->
     <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700">
@@ -18,10 +38,10 @@
         <form id="searchForm" class="space-y-6">
             <!-- Search Input -->
             <div>
-                <input type="text" 
-                       class="w-full bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-4 py-3 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] transition-colors" 
-                       id="query" 
-                       name="q" 
+                <input type="text"
+                       class="w-full bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-4 py-3 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] transition-colors"
+                       id="query"
+                       name="q"
                        value="{{ query }}"
                        placeholder="Enter your search query...">
             </div>
@@ -31,13 +51,13 @@
                 <label class="block text-gray-100 mb-2">Search Balance</label>
                 <div class="flex items-center gap-4">
                     <span class="text-gray-400 text-sm">Keyword Search</span>
-                    <input type="range" 
-                           class="flex-1 h-2 bg-[#1A1D21] rounded-lg appearance-none cursor-pointer accent-[#1264a3]" 
-                           id="hybrid_alpha" 
-                           name="hybrid_alpha" 
-                           min="0" 
-                           max="1" 
-                           step="0.1" 
+                    <input type="range"
+                           class="flex-1 h-2 bg-[#1A1D21] rounded-lg appearance-none cursor-pointer accent-[#1264a3]"
+                           id="hybrid_alpha"
+                           name="hybrid_alpha"
+                           min="0"
+                           max="1"
+                           step="0.1"
                            value="{{ hybrid_alpha }}">
                     <span class="text-gray-400 text-sm">AI Search</span>
                 </div>
@@ -46,8 +66,9 @@
 
             <!-- Submit Button -->
             <div class="text-center">
-                <button type="submit" 
-                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-6 py-2 rounded transition-colors text-lg">
+                <button type="submit"
+                        class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-6 py-2 rounded transition-colors text-lg"
+                        onclick="document.getElementById('searchLoading').classList.add('loading'); return true;">
                     Search Messages
                 </button>
             </div>
@@ -55,10 +76,13 @@
     </div>
 
     <!-- Loading State -->
-    <div id="searchLoading" class="hidden">
-        <div class="text-center py-8">
-            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-[#1264a3] border-t-transparent mb-3"></div>
-            <p class="text-gray-400">Searching...</p>
+    <div id="searchLoading">
+        <div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700">
+            <div class="text-center py-8">
+                <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-[#1264a3] border-t-transparent mb-3"></div>
+                <p class="text-gray-100 text-lg">Searching messages...</p>
+                <p class="text-gray-400 mt-2">This may take a few seconds depending on the size of your data.</p>
+            </div>
         </div>
     </div>
 
@@ -73,20 +97,24 @@
                             {% if result.conversation.type == 'channel' %}#{% endif %}{{ result.conversation.name }}
                         </div>
                         <div class="text-gray-400">
-                            {{ result.user_name or result.user }}
+                            {{ result.user or 'Unknown user' }}
                         </div>
                         <div class="text-gray-400">
-                            {{ result.ts|timedelta }}
+                            {% if result.ts %}
+                                {{ result.ts|strftime }}
+                            {% else %}
+                                Unknown date
+                            {% endif %}
                         </div>
                     </div>
-                    <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" 
+                    <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}"
                        class="text-[#1264a3] hover:text-[#0b4d82] text-sm transition-colors">
                         View in context
                     </a>
                 </div>
                 <div class="flex justify-between items-start">
                     <h5 class="text-lg font-medium text-gray-100 mb-1">
-                        <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}" 
+                        <a href="/conversations/{{ result.conversation_id }}{% if result.ts %}?ts={{ result.ts }}{% endif %}"
                            class="hover:text-white transition-colors">
                             {{ result.conversation.name }}
                         </a>
@@ -106,5 +134,18 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+    // Hide loading indicator when page loads with results
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchResults = document.getElementById('searchResults');
+        const searchLoading = document.getElementById('searchLoading');
+
+        if (searchResults && searchResults.children.length > 0) {
+            if (searchLoading) {
+                searchLoading.classList.remove('loading');
+            }
+        }
+    });
+</script>
 <script src="{{ url_for('static', path='js/search.js') }}"></script>
 {% endblock %}

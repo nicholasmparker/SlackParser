@@ -80,6 +80,14 @@
                         <button class="btn btn-success btn-sm start-import-btn" data-upload-id="{{ upload._id }}">
                             <i class="fas fa-play"></i> Start Import
                         </button>
+                        {% elif upload.status|lower == "imported" %}
+                        <button class="btn btn-info btn-sm train-embeddings-btn" data-upload-id="{{ upload._id }}">
+                            <i class="fas fa-brain"></i> Train Embeddings
+                        </button>
+                        {% elif upload.status|lower == "complete" %}
+                        <button class="btn btn-info btn-sm train-embeddings-btn" data-upload-id="{{ upload._id }}">
+                            <i class="fas fa-brain"></i> Train Embeddings
+                        </button>
                         {% elif upload.status|lower in ["extracting", "importing"] %}
                         <button class="btn btn-danger btn-sm cancel-import-btn" data-upload-id="{{ upload._id }}">
                             <i class="fas fa-stop"></i> Cancel

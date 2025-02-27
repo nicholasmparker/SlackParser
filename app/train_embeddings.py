@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from tqdm.asyncio import tqdm
 import os
+import sys
 from typing import List, Dict, Any
 
 from app.embeddings import EmbeddingService
@@ -46,11 +47,11 @@ async def get_embedding_progress(client):
 async def update_embedding_progress(client, processed, total, status="running", last_message_id=None, error=None):
     """Update the progress of embedding generation"""
     now = datetime.utcnow()
-    
+
     # Calculate percentage and format nicely
     percent = (processed / total * 100) if total > 0 else 0
     percent_str = f"{percent:.1f}%"
-    
+
     # Calculate messages per second
     prev_progress = await client[MONGO_DB]["embedding_progress"].find_one({"_id": "current"})
     if prev_progress and prev_progress.get("last_updated"):
@@ -67,10 +68,10 @@ async def update_embedding_progress(client, processed, total, status="running", 
     else:
         msgs_per_sec = 0
         eta = "calculating..."
-    
+
     # Log progress
     logger.info(f"Progress: {processed:,}/{total:,} messages ({percent_str}) - {msgs_per_sec:.1f} msgs/sec - ETA: {eta}")
-    
+
     await client[MONGO_DB]["embedding_progress"].update_one(
         {"_id": "current"},
         {
@@ -95,14 +96,14 @@ async def get_messages_batch(client, skip: int, limit: int) -> List[Dict[Any, An
         db = client[MONGO_DB]
         retries = 3
         backoff = 1
-        
+
         for attempt in range(retries):
             try:
                 cursor = db.messages.find({
                     "text": {"$exists": True, "$ne": ""},
                     "user": {"$not": {"$regex": ".*_bot$"}}
                 }).sort("timestamp", -1).skip(skip).limit(limit)
-                
+
                 return await cursor.to_list(length=None)
             except Exception as e:
                 if attempt == retries - 1:
@@ -118,36 +119,36 @@ async def enrich_messages(client, messages: List[Dict[Any, Any]]) -> List[Dict[A
     """Enrich messages with additional context"""
     if not messages:
         return []
-        
+
     db = client[MONGO_DB]
     enriched = []
-    
+
     # Get all unique conversation IDs
     conv_ids = list(set(m.get("conversation") for m in messages if m.get("conversation")))
-    
+
     # Fetch all conversations in one query
     conversations = {}
     if conv_ids:
         cursor = db.conversations.find({"_id": {"$in": conv_ids}})
         async for conv in cursor:
             conversations[conv["_id"]] = conv
-    
+
     for msg in messages:
         enriched_msg = msg.copy()
-        
+
         # Add conversation context
         conv_id = msg.get("conversation")
         if conv_id and conv_id in conversations:
             conv = conversations[conv_id]
             enriched_msg["conversation_name"] = conv.get("name", "")
             enriched_msg["conversation_type"] = conv.get("type", "")
-        
+
         # Clean and normalize text
         if enriched_msg.get("text"):
             enriched_msg["text"] = enriched_msg["text"].strip()
-        
+
         enriched.append(enriched_msg)
-    
+
     return enriched
 
 async def process_message_batch(
@@ -159,23 +160,23 @@ async def process_message_batch(
     """Process a batch of messages, returning number of successful embeddings"""
     if not messages:
         return 0
-    
+
     try:
         # Enrich messages
         enriched_messages = await enrich_messages(client, messages)
-        
+
         # Generate embeddings in smaller batches
         successful = 0
         for i in range(0, len(enriched_messages), batch_size):
             batch = enriched_messages[i:i + batch_size]
             try:
-                await embedding_service.add_messages(batch, batch_size=batch_size)
+                embedding_service.add_messages(batch)
                 successful += len(batch)
             except Exception as e:
                 logger.error(f"Failed to process messages {i} to {i + len(batch)}: {e}")
                 # Continue with next batch instead of failing completely
                 continue
-        
+
         return successful
     except Exception as e:
         logger.error(f"Failed to process batch: {e}")
@@ -190,32 +191,36 @@ async def main():
     parser.add_argument('--max-retries', type=int, default=3, help='Maximum number of retries for failed batches')
     parser.add_argument('--reset', action='store_true', help='Reset existing embeddings before starting')
     args = parser.parse_args()
-    
+
     # Initialize services
     try:
         logger.debug("Initializing services...")
         embedding_service = EmbeddingService()
+        embedding_service.initialize()
         mongo_client = AsyncIOMotorClient(MONGO_URL)
-        
+
         # Test MongoDB connection
         logger.debug("Testing MongoDB connection...")
         await mongo_client.admin.command('ping')
         logger.info(f"Connected to MongoDB at {MONGO_URL}")
-        
+
         # Get database
         db = mongo_client[MONGO_DB]
-        
+
         if args.reset:
             logger.info("Resetting existing embeddings...")
             await embedding_service.delete_all()
-        
+
         # Get or create progress
         logger.debug("Getting embedding progress...")
         progress = await get_embedding_progress(mongo_client)
+        # Ensure retries is initialized
+        if "retries" not in progress:
+            progress["retries"] = 0
         if progress["status"] == "completed":
             logger.info("Embeddings are already up to date")
             return
-            
+
         # Get total count
         logger.debug("Getting total message count...")
         total = await db.messages.count_documents({
@@ -223,15 +228,15 @@ async def main():
             "user": {"$not": {"$regex": ".*_bot$"}}
         })
         logger.info(f"Found {total:,} total messages to process")
-        
+
         if total == 0:
             logger.error("No messages found in database")
             return
-            
+
         # Process messages in batches with progress bar
         logger.debug("Starting message processing...")
         pbar = tqdm(total=total, initial=progress["processed"], desc="Processing messages")
-        
+
         try:
             while progress["processed"] < total:
                 try:
@@ -242,11 +247,11 @@ async def main():
                         skip=progress["processed"],
                         limit=args.fetch_batch_size
                     )
-                    
+
                     if not messages:
                         logger.warning("No messages returned in batch")
                         break
-                    
+
                     logger.debug(f"Processing batch of {len(messages)} messages")
                     # Process messages
                     successful = await process_message_batch(
@@ -255,7 +260,7 @@ async def main():
                         messages,
                         args.batch_size
                     )
-                    
+
                     # Update progress
                     if successful > 0:
                         progress["processed"] += successful
@@ -275,7 +280,7 @@ async def main():
                             raise Exception(f"Failed to process batch after {progress['retries']} retries")
                         logger.warning(f"Retrying batch (attempt {progress['retries']}/{args.max_retries})")
                         await asyncio.sleep(min(progress["retries"] * 2, 30))  # Exponential backoff
-            
+
                 except Exception as e:
                     logger.error(f"Error processing batch: {e}", exc_info=True)
                     await update_embedding_progress(
@@ -286,11 +291,11 @@ async def main():
                         error=str(e)
                     )
                     raise
-            
+
             # Mark as completed
             await update_embedding_progress(mongo_client, progress["processed"], total, status="completed")
             logger.info("Successfully trained all embeddings")
-            
+
         except Exception as e:
             logger.error(f"Error training embeddings: {e}", exc_info=True)
             await update_embedding_progress(
@@ -304,7 +309,7 @@ async def main():
         finally:
             pbar.close()
             mongo_client.close()
-            
+
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}", exc_info=True)
         sys.exit(1)

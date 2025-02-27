@@ -32,6 +32,14 @@ function attachImportButtonListeners() {
         });
     });
 
+    // Train embeddings buttons
+    document.querySelectorAll('.train-embeddings-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const uploadId = this.getAttribute('data-upload-id');
+            trainEmbeddings(uploadId);
+        });
+    });
+
     // Restart import buttons (dynamically added)
     document.addEventListener('click', function(e) {
         if (e.target.closest('.restart-import-btn')) {
@@ -78,6 +86,24 @@ function pollImportStatus(uploadId) {
                         actionsContainer.innerHTML = `
                             <div class="alert alert-success">
                                 Import completed successfully
+                            </div>
+                        `;
+                    }
+
+                    // Refresh the page after a short delay
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 3000);
+                } else if (data.status === "COMPLETE") {
+                    console.log("Training completed");
+                    clearInterval(pollInterval);
+
+                    // Update the UI
+                    const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+                    if (actionsContainer) {
+                        actionsContainer.innerHTML = `
+                            <div class="alert alert-success">
+                                Training completed successfully
                             </div>
                         `;
                     }
@@ -336,6 +362,46 @@ function restartImport(uploadId) {
 }
 
 /**
+ * Start the training process for embeddings
+ */
+function trainEmbeddings(uploadId) {
+    console.log("Starting training for upload ID:", uploadId);
+
+    fetch(`/admin/embeddings/train/${uploadId}`, {
+        method: 'POST'
+    })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log("Training started:", data);
+
+            // Update the UI
+            const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+            if (actionsContainer) {
+                actionsContainer.innerHTML = `
+                    <div class="progress-container">
+                        <div class="progress">
+                            <div class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                        </div>
+                        <div class="progress-text">Starting training...</div>
+                    </div>
+                `;
+            }
+
+            // Start polling for status updates
+            pollImportStatus(uploadId);
+        })
+        .catch(error => {
+            console.error("Error starting training:", error);
+            showError(`Error starting training: ${error.message}`);
+        });
+}
+
+/**
  * Update action buttons based on status
  */
 function updateActions(uploadId, status) {
@@ -349,7 +415,7 @@ function updateActions(uploadId, status) {
     actionsCell.innerHTML = '';
 
     // Add appropriate buttons based on status
-    if (['uploaded', 'error', 'extracted'].includes(statusLower)) {
+    if (['uploaded', 'error'].includes(statusLower)) {
         // Start button
         const startBtn = document.createElement('button');
         startBtn.className = 'start-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';
@@ -364,6 +430,35 @@ function updateActions(uploadId, status) {
             startImport(uploadId);
         });
         actionsCell.appendChild(startBtn);
+    } else if (statusLower === 'extracted') {
+        // Start import button
+        const startBtn = document.createElement('button');
+        startBtn.className = 'start-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';
+        startBtn.setAttribute('data-upload-id', uploadId);
+        startBtn.innerHTML = `
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+        `;
+        startBtn.addEventListener('click', function() {
+            startImport(uploadId);
+        });
+        actionsCell.appendChild(startBtn);
+    } else if (statusLower === 'imported') {
+        // Train embeddings button
+        const trainBtn = document.createElement('button');
+        trainBtn.className = 'train-embeddings-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';
+        trainBtn.setAttribute('data-upload-id', uploadId);
+        trainBtn.innerHTML = `
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+        `;
+        trainBtn.addEventListener('click', function() {
+            trainEmbeddings(uploadId);
+        });
+        actionsCell.appendChild(trainBtn);
     } else if (['extracting', 'importing', 'training'].includes(statusLower)) {
         // Cancel button
         const cancelBtn = document.createElement('button');
