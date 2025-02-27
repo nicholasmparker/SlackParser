@@ -1,0 +1,33 @@
+<!-- Upload Section -->
+<div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700 transition-all hover:border-gray-600">
+    <h3 class="text-lg font-medium text-gray-100 mb-2">Upload Slack Export</h3>
+    <p class="text-gray-400 mb-4">Upload your Slack export ZIP file here. The file will be processed and indexed for searching.</p>
+
+    <form id="uploadForm" method="post" action="/admin/upload" enctype="multipart/form-data" class="space-y-4">
+        <div class="flex gap-2">
+            <input type="file"
+                   class="flex-1 bg-[#1A1D21] text-gray-100 rounded border border-gray-700 px-3 py-2 focus:outline-none focus:border-[#1264a3] focus:ring-1 focus:ring-[#1264a3] focus:ring-offset-0 transition-colors"
+                   id="file"
+                   name="file"
+                   accept=".zip">
+            <button type="submit"
+                    id="uploadButton"
+                    class="bg-[#1264a3] hover:bg-[#0b4d82] text-white px-4 py-2 rounded transition-colors">
+                Upload
+            </button>
+        </div>
+    </form>
+
+    <div id="uploadProgress" class="hidden mt-4">
+        <div class="flex justify-between items-center mb-2">
+            <div id="uploadStatus" class="text-[#1264a3]">Uploading...</div>
+            <div class="text-gray-400">
+                <span id="uploadProgressPercent">0%</span>
+                (<span id="uploadProgressBytes">0 B</span> / <span id="uploadTotalBytes">0 B</span>)
+            </div>
+        </div>
+        <div class="w-full bg-[#1A1D21] rounded-full h-2.5 overflow-hidden">
+            <div id="uploadProgressBar" class="bg-[#1264a3] h-2.5 rounded-full" style="width: 0%"></div>
+        </div>
+    </div>
+</div>

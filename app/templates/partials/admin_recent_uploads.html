@@ -1,0 +1,100 @@
+<!-- Recent Uploads Section -->
+<div class="bg-[#222529] rounded-lg p-6 mb-6 border border-gray-700 transition-all hover:border-gray-600">
+    <h3 class="text-lg font-medium text-gray-100 mb-4">Recent Uploads</h3>
+    <div class="overflow-x-auto">
+        <table class="w-full">
+            <thead>
+                <tr class="text-left border-b border-gray-700">
+                    <th class="pb-3 text-gray-400 font-medium">Filename</th>
+                    <th class="pb-3 text-gray-400 font-medium">Status</th>
+                    <th class="pb-3 text-gray-400 font-medium">Size</th>
+                    <th class="pb-3 text-gray-400 font-medium">Uploaded</th>
+                    <th class="pb-3 text-gray-400 font-medium text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {% for upload in uploads %}
+                <tr data-upload-id="{{ upload._id }}" class="hover:bg-[#2C2F33] transition-colors">
+                    <td class="py-3 text-gray-100">{{ upload.filename }}</td>
+                    <td class="py-3" id="status-cell-{{ upload._id }}">
+                        {% if upload.status|lower == "extracting" %}
+                            <div class="space-y-2">
+                                <span id="status-{{ upload._id }}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Extracting</span>
+                                <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-400 mt-1">{{ upload.progress }}</div>
+                                {% if upload.progress_percent is not none %}
+                                <div class="w-full bg-[#1A1D21] rounded-full h-2 overflow-hidden">
+                                    <div id="progress-bar-{{ upload._id }}" class="bg-[#1264a3] h-2 rounded-full" style="width: {{ upload.progress_percent }}%"></div>
+                                </div>
+                                {% endif %}
+                            </div>
+                        {% elif upload.status|lower == "importing" %}
+                            <div class="space-y-2">
+                                <span id="status-{{ upload._id }}" class="bg-blue-900/50 text-blue-100 px-2 py-1 rounded-full text-xs">Importing</span>
+                                <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-400 mt-1">{{ upload.progress }}</div>
+                                {% if upload.progress_percent is not none %}
+                                <div class="w-full bg-[#1A1D21] rounded-full h-2 overflow-hidden">
+                                    <div id="progress-bar-{{ upload._id }}" class="bg-[#1264a3] h-2 rounded-full" style="width: {{ upload.progress_percent }}%"></div>
+                                </div>
+                                {% endif %}
+                            </div>
+                        {% elif upload.status|lower == "training" %}
+                            <div class="space-y-2">
+                                <span id="status-{{ upload._id }}" class="bg-purple-900/50 text-purple-100 px-2 py-1 rounded-full text-xs">Training</span>
+                                <div id="progress-text-{{ upload._id }}" class="text-sm text-gray-400 mt-1">{{ upload.progress }}</div>
+                                {% if upload.progress_percent is not none %}
+                                <div class="w-full bg-[#1A1D21] rounded-full h-2 overflow-hidden">
+                                    <div id="progress-bar-{{ upload._id }}" class="bg-purple-500 h-2 rounded-full" style="width: {{ upload.progress_percent }}%"></div>
+                                </div>
+                                {% endif %}
+                            </div>
+                        {% elif upload.status|lower == "complete" %}
+                            <span id="status-{{ upload._id }}" class="bg-green-900/50 text-green-100 px-2 py-1 rounded-full text-xs">Complete</span>
+                        {% elif upload.status|lower == "error" %}
+                            <div>
+                                <span id="status-{{ upload._id }}" class="bg-red-900/50 text-red-100 px-2 py-1 rounded-full text-xs">Error</span>
+                                {% if upload.error_message %}
+                                <div id="error-message-{{ upload._id }}" class="text-sm text-red-400 mt-1">{{ upload.error_message }}</div>
+                                {% endif %}
+                            </div>
+                        {% elif upload.status|lower == "uploaded" %}
+                            <span id="status-{{ upload._id }}" class="bg-gray-700 text-gray-100 px-2 py-1 rounded-full text-xs">Uploaded</span>
+                        {% elif upload.status|lower == "extracted" %}
+                            <span id="status-{{ upload._id }}" class="bg-yellow-900/50 text-yellow-100 px-2 py-1 rounded-full text-xs">Extracted</span>
+                        {% elif upload.status|lower == "cancelled" %}
+                            <span id="status-{{ upload._id }}" class="bg-gray-700 text-gray-100 px-2 py-1 rounded-full text-xs">Cancelled</span>
+                        {% else %}
+                            <span id="status-{{ upload._id }}" class="bg-gray-700 text-gray-100 px-2 py-1 rounded-full text-xs">{{ upload.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-3 text-gray-100">{{ upload.size | filesizeformat }}</td>
+                    <td class="py-3 text-gray-100">{{ upload.created_at | strftime }}</td>
+                    <td class="py-3 text-right space-x-2" id="actions-cell-{{ upload._id }}">
+                        {% if upload.status|lower in ["uploaded", "error", "extracted"] %}
+                            <button class="start-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors" data-upload-id="{{ upload._id }}">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                            </button>
+                        {% endif %}
+                        {% if upload.status|lower in ["extracting", "importing", "training"] %}
+                            <button class="cancel-import-btn text-red-500 hover:text-red-400 transition-colors" data-upload-id="{{ upload._id }}">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not uploads %}
+                <tr>
+                    <td colspan="5" class="py-8 text-center text-gray-400">
+                        No uploads found. Upload a Slack export ZIP file to get started.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
