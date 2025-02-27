@@ -315,7 +315,7 @@ function updateActions(uploadId, status) {
             cancelImport(uploadId);
         });
         actionsCell.appendChild(cancelBtn);
-    } else if (['cancelled', 'canceled'].includes(statusLower)) {
+    } else if (['cancelled', 'canceled', 'complete', 'completed'].includes(statusLower)) {
         // Restart button
         const restartBtn = document.createElement('button');
         restartBtn.className = 'restart-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';
