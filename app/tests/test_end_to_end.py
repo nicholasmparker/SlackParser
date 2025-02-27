@@ -13,7 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from unittest.mock import patch, MagicMock
 import asyncio
 
-from app.new_main import app
+from app.main import app
 from app.services.main_service import MainService
 
 # Create a test client as a fixture that depends on test_db
@@ -26,7 +26,7 @@ async def client(test_db):
 
     # Create a test client with a custom startup event handler
     # We need to patch the get_db function to prevent it from being awaited
-    with patch('app.new_main.get_db') as mock_get_db:
+    with patch('app.main.get_db') as mock_get_db:
         # Make the mock return the existing database
         mock_get_db.return_value = app.db
 

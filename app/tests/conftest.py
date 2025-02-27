@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from app.new_main import app
+from app.main import app
 from app.services.main_service import MainService
 from fastapi.testclient import TestClient
 
