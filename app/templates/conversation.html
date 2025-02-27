@@ -36,7 +36,7 @@
                     <span class="font-bold">{{ message.user_name }}</span>
                     <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" 
                           class="text-xs text-gray-400">
-                        {{ message.ts|strftime("%I:%M %p")|lower }}
+                        {{ message.ts|strftime("%Y-%m-%d %I:%M %p")|lower }}
                     </time>
                 </div>
                 

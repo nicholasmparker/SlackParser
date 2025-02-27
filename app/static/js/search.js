@@ -79,7 +79,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                                     ${new Date(result.ts * 1000).toLocaleString()}
                                                 </div>
                                             </div>
-                                            <a href="/conversation/${result.conversation_id}?ts=${result.ts}" 
+                                            <a href="/conversations/${result.conversation_id}?ts=${result.ts}" 
                                                class="btn btn-outline-primary btn-sm">
                                                 View in context
                                             </a>

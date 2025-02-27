@@ -2,10 +2,14 @@
 
 import os
 import logging
+import asyncio
+import zipfile
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from bson import ObjectId
+from bson.errors import InvalidId
 import json
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Body, Query
@@ -66,7 +70,7 @@ def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
     For messages, we follow Slack's display logic:
     - Messages from today: show only time (3:56 PM)
     - Messages from this week: show day and time (Wed 3:56 PM)
-    - Older messages: show date and time (Feb 24, 3:56 PM)
+    - Older messages: show date and time (Feb 24, 2022 3:56 PM)
     """
     if not value:
         return ""
@@ -102,7 +106,7 @@ def strftime_filter(value, fmt="%Y-%m-%d %H:%M:%S"):
 
         # Older messages
         else:
-            return value.strftime("%b %d, %I:%M %p").lstrip("0")
+            return value.strftime("%b %d, %Y %I:%M %p").lstrip("0")
 
     except Exception as e:
         logging.error(f"Error formatting timestamp: {str(e)}")
@@ -224,6 +228,139 @@ async def admin_page(request: Request):
         }
     )
 
+@app.post("/admin/upload")
+async def admin_upload_file(request: Request, file: UploadFile = File(...)):
+    """Handle file upload from admin page"""
+    try:
+        logging.info(f"Starting upload of {file.filename}")
+
+        # Validate file
+        if not file.filename or not file.filename.lower().endswith('.zip'):
+            raise HTTPException(status_code=400, detail="Only ZIP files are allowed")
+
+        # Create upload record
+        upload_id = ObjectId()
+        await app.db.uploads.insert_one({
+            "_id": upload_id,
+            "filename": file.filename,
+            "status": "UPLOADING",
+            "created_at": datetime.utcnow(),
+            "size": 0,
+            "uploaded_size": 0
+        })
+
+        logging.info(f"Created upload record with ID {upload_id}")
+
+        # Ensure upload directory exists
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+        # Save file with unique name to avoid conflicts
+        safe_filename = f"{upload_id}_{file.filename.replace(' ', '_')}"
+        file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+        # Save file in chunks to handle large files
+        total_size = 0
+        last_update = 0
+
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)  # 8MB chunks
+                if not chunk:
+                    break
+
+                buffer.write(chunk)
+                total_size += len(chunk)
+
+                # Only update DB every 100MB to reduce load
+                if total_size - last_update > 100 * 1024 * 1024:
+                    await app.db.uploads.update_one(
+                        {"_id": upload_id},
+                        {"$set": {
+                            "uploaded_size": total_size,
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                    last_update = total_size
+
+        # Update final status
+        await app.db.uploads.update_one(
+            {"_id": upload_id},
+            {"$set": {
+                "status": "UPLOADED",
+                "size": total_size,
+                "uploaded_size": total_size,
+                "file_path": str(file_path),
+                "updated_at": datetime.utcnow()
+            }}
+        )
+
+        logging.info(f"Upload complete: {total_size} bytes")
+
+        return JSONResponse({
+            "id": str(upload_id),
+            "status": "UPLOADED",
+            "size": total_size
+        })
+
+    except Exception as e:
+        logging.error(f"Upload error: {str(e)}", exc_info=True)
+        try:
+            os.unlink(file_path)
+        except (FileNotFoundError, UnboundLocalError):
+            logging.warning(f"Could not delete file, it may not exist")
+        try:
+            if 'upload_id' in locals():
+                await app.db.uploads.delete_one({"_id": upload_id})
+        except Exception as e:
+            logging.error(f"Error deleting upload record: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/import-status/{upload_id}")
+async def get_single_import_status(upload_id: str):
+    """Get the status of a specific import"""
+    try:
+        # Convert the upload_id string to ObjectId
+        upload_oid = ObjectId(upload_id)
+
+        # Find the upload in the database
+        upload = await app.db.uploads.find_one({"_id": upload_oid})
+
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Upload not found"}
+            )
+
+        # Convert ObjectId to string for JSON serialization
+        upload["_id"] = str(upload["_id"])
+
+        # Convert datetime objects to ISO format strings
+        for key, value in upload.items():
+            if isinstance(value, datetime):
+                upload[key] = value.isoformat()
+
+        # Return the upload status
+        return {
+            "status": upload.get("status", "UNKNOWN"),
+            "progress": upload.get("progress", ""),
+            "progress_percent": upload.get("progress_percent", 0),
+            "error_message": upload.get("error", None),
+            "updated_at": upload.get("updated_at"),
+            "file_path": upload.get("file_path", ""),
+            "filename": upload.get("filename", "")
+        }
+    except InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid upload ID format"}
+        )
+    except Exception as e:
+        logging.error(f"Error getting import status: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
 @app.get("/conversations", response_class=HTMLResponse)
 async def conversations(
     request: Request,
@@ -250,6 +387,7 @@ async def conversations(
             "name": {"$ifNull": ["$name", "$_id"]},  # Use _id as fallback if name is null
             "type": 1,
             "channel_id": 1,  # Include channel_id for message lookup
+            "created": 1,  # Include created timestamp for sorting
             "display_name": {
                 "$cond": {
                     "if": {"$eq": ["$type", "dm"]},
@@ -270,7 +408,7 @@ async def conversations(
                 }
             }
         }},
-        {"$sort": {"name": 1}},
+        {"$sort": {"created": -1}},  # Sort by created timestamp, most recent first
         {"$skip": skip},
         {"$limit": page_size}
     ]
@@ -397,57 +535,6 @@ async def upload_file(file: UploadFile = File(...)):
         logger.error(f"Upload error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/extract/{upload_id}")
-async def extract_upload(upload_id: str, background_tasks: BackgroundTasks):
-    """Extract a ZIP file in the background."""
-    try:
-        # Get upload
-        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
-        if not upload:
-            raise HTTPException(status_code=404, detail="Upload not found")
-
-        # Start extraction in the background
-        background_tasks.add_task(
-            app.service.extraction_service.extract_with_progress,
-            upload_id=upload_id,
-            file_path=upload["file_path"]
-        )
-
-        return JSONResponse({"status": "EXTRACTING", "id": upload_id})
-    except Exception as e:
-        logger.error(f"Extract error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/import/{upload_id}")
-async def import_upload(upload_id: str, background_tasks: BackgroundTasks):
-    """Import a Slack export in the background."""
-    try:
-        # Start import in the background
-        background_tasks.add_task(
-            app.service.import_service.start_import_process,
-            upload_id=upload_id
-        )
-
-        return JSONResponse({"status": "IMPORTING", "id": upload_id})
-    except Exception as e:
-        logger.error(f"Import error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/admin/start-import-process/{upload_id}")
-async def start_import_endpoint(upload_id: str):
-    """Start the import process for an extracted upload"""
-    try:
-        logger.info(f"start_import_endpoint: Calling start_import_process for {upload_id}")
-        result = await app.service.import_service.start_import_process(upload_id)
-        logger.info(f"Import process started with result: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Error starting import process: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": f"Error starting import: {str(e)}"}
-        )
-
 @app.get("/uploads")
 async def list_uploads():
     """List all uploads."""
@@ -552,36 +639,100 @@ async def list_conversations():
         logger.error(f"List conversations error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str, limit: int = 100, before: Optional[float] = None):
+@app.get("/conversations/{conversation_id}", response_class=HTMLResponse)
+async def get_conversation(
+    request: Request,
+    conversation_id: str,
+    page: int = Query(1, ge=1),
+    q: Optional[str] = None,
+    ts: Optional[float] = None
+):
     """Get conversation by ID with messages."""
     try:
-        # Get conversation
+        page_size = 50
+
+        # Try to get conversation by channel_id first
         conversation = await app.db.conversations.find_one({"channel_id": conversation_id})
+        
+        # If not found, try by _id (in case it's a MongoDB ObjectId)
+        if not conversation:
+            try:
+                conversation = await app.db.conversations.find_one({"_id": ObjectId(conversation_id)})
+            except:
+                # If conversion to ObjectId fails, it's not a valid ObjectId
+                pass
+                
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Build query for messages
-        query = {"conversation_id": conversation_id}
-        if before:
-            query["ts"] = {"$lt": before}
+        # Use channel_id for querying messages
+        channel_id = conversation.get("channel_id", str(conversation["_id"]))
 
-        # Get messages
-        messages = await app.db.messages.find(query).sort("ts", -1).limit(limit).to_list(length=limit)
+        # Add display name
+        if conversation.get("type") == "dm":
+            name = conversation.get("name", str(conversation["_id"]))
+            parts = name.split("-")
+            display_name = ", ".join(parts)
+        else:
+            display_name = f"#{conversation.get('name', str(conversation['_id']))}"
 
-        # Format response
-        return JSONResponse({
-            "conversation": {
-                "id": conversation["channel_id"],
-                "name": conversation.get("name", "Unknown"),
-                "type": conversation.get("type", "unknown"),
-                "created": conversation.get("created", ""),
-                "topic": conversation.get("topic", ""),
-                "purpose": conversation.get("purpose", "")
-            },
-            "messages": messages,
-            "count": len(messages)
-        })
+        conversation["display_name"] = display_name
+
+        # Build query
+        query = {"conversation_id": channel_id}
+        if q:
+            query["text"] = {"$regex": q, "$options": "i"}
+
+        # If we have a timestamp in the URL, find which page it's on
+        if ts is not None:
+            # Count messages before this timestamp
+            count_before = await app.db.messages.count_documents({
+                **query,
+                "ts": {"$gte": ts}  # Count messages after this one since we sort descending
+            })
+            # Calculate which page this message is on
+            page = (count_before // page_size) + 1
+
+        skip = (page - 1) * page_size
+
+        # Get messages with sorting
+        pipeline = [
+            {"$match": query},
+            {"$sort": {"ts": -1}},
+            {"$skip": skip},
+            {"$limit": page_size},
+            # Add user_name field if not present
+            {"$addFields": {
+                "user_name": {
+                    "$ifNull": [
+                        # Try username from message
+                        "$username",
+                        # Try user_name from message
+                        "$user_name",
+                        # Fallback to user field
+                        "$user"
+                    ]
+                }
+            }}
+        ]
+
+        messages = await app.db.messages.aggregate(pipeline).to_list(length=page_size)
+
+        # Get total count for pagination
+        total_messages = await app.db.messages.count_documents(query)
+        total_pages = (total_messages + page_size - 1) // page_size
+
+        return templates.TemplateResponse(
+            "conversation.html",
+            {
+                "request": request,
+                "conversation": conversation,
+                "messages": messages,
+                "page": page,
+                "total_pages": total_pages,
+                "q": q
+            }
+        )
     except Exception as e:
         logger.error(f"Get conversation error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -599,6 +750,61 @@ async def get_message_context(conversation_id: str, timestamp: float, context_si
     except Exception as e:
         logger.error(f"Get context error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/extract/{upload_id}/start")
+async def admin_start_extract(upload_id: str):
+    """Start the extraction process for an upload."""
+    try:
+        # Get upload
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+
+        # Create extract directory path
+        extract_dir = Path(f"/data/extracts/{upload_id}")
+
+        # Start extraction in the background
+        asyncio.create_task(
+            app.service.extraction_service.extract_with_progress(
+                zip_path=upload["file_path"],
+                extract_dir=extract_dir,
+                upload_id=upload_id
+            )
+        )
+
+        return JSONResponse({"success": True, "message": "Extraction started"})
+    except Exception as e:
+        logger.error(f"Extract error: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Error starting extraction: {str(e)}"}
+        )
+
+@app.post("/admin/import/{upload_id}/start")
+async def admin_start_import(upload_id: str):
+    """Start the import process for an upload."""
+    try:
+        # Get upload
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+
+        # Start import process
+        result = await app.service.import_service.start_import_process(upload_id)
+        
+        return JSONResponse({"success": True, "message": "Import started"})
+    except Exception as e:
+        logger.error(f"Import error: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Error starting import: {str(e)}"}
+        )
 
 # Run the application
 if __name__ == "__main__":

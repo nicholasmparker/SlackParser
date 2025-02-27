@@ -163,7 +163,7 @@ function startImport(uploadId) {
                     });
             } else if (data.status === "EXTRACTED") {
                 // Call the start-import-process endpoint
-                fetch(`/admin/start-import-process/${uploadId}`, {
+                fetch(`/admin/import/${uploadId}/start`, {
                     method: 'POST'
                 })
                     .then(async response => {
