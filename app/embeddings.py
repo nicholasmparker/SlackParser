@@ -296,8 +296,7 @@ class EmbeddingService:
         results = self.collection.query(
             query_embeddings=[query_embedding.tolist()],  # Convert numpy array to list
             n_results=limit,
-            include=["documents", "metadatas", "distances"],
-            where={"conversation_id": {"$ne": ""}}  # Add a simple filter that matches everything
+            include=["documents", "metadatas", "distances"]
         )
 
         # Format results
@@ -346,8 +345,7 @@ class EmbeddingService:
                 semantic_results = self.collection.query(
                     query_embeddings=[query_embedding.tolist()],
                     n_results=expanded_limit,
-                    include=['documents', 'metadatas', 'distances'],
-                    where={"conversation_id": {"$ne": ""}}  # Add a simple filter that matches everything
+                    include=['documents', 'metadatas', 'distances']
                 )
                 logger.info(f"Got {len(semantic_results['ids'][0])} semantic results from Chroma")
 

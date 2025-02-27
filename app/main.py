@@ -504,7 +504,7 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
             )
 
             # Extract conversation IDs from results
-            conversation_ids = list(set(r["metadata"]["channel"] for r in search_results))
+            conversation_ids = list(set(r["metadata"]["conversation_id"] for r in search_results))
 
             # Get conversation details
             conversations = await app.db.conversations.find(
@@ -524,8 +524,8 @@ async def search_page(request: Request, q: str = "", hybrid_alpha: float = 0.5):
 
                 results.append({
                     "text": r["text"],
-                    "conversation": conv_map.get(str(r["metadata"]["channel"]), {"name": "Unknown", "type": "unknown"}),
-                    "conversation_id": r["metadata"]["channel"],
+                    "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
+                    "conversation_id": r["metadata"]["conversation_id"],
                     "user": r["metadata"]["user"],
                     "ts": ts,
                     "score": r["similarity"],
@@ -1083,7 +1083,7 @@ async def api_search(
 
         # Perform semantic search
         logger.info("Performing semantic search")
-        search_results = await app.embeddings.search(
+        search_results = app.embeddings.search(
             query=query,
             limit=limit,
             hybrid_alpha=hybrid_alpha
@@ -1092,9 +1092,9 @@ async def api_search(
         # Extract conversation IDs from results, skipping any without conversation_id
         logger.info(f"Got {len(search_results)} results")
         conversation_ids = list(set(
-            r["metadata"]["channel"]
+            r["metadata"]["conversation_id"]
             for r in search_results
-            if "metadata" in r and "channel" in r["metadata"]
+            if "metadata" in r and "conversation_id" in r["metadata"]
         ))
 
         # Get conversation details
@@ -1108,7 +1108,7 @@ async def api_search(
         results = []
         for r in search_results:
             # Skip results without proper metadata
-            if "metadata" not in r or "channel" not in r["metadata"]:
+            if "metadata" not in r or "conversation_id" not in r["metadata"]:
                 logger.warning(f"Skipping result without proper metadata: {r}")
                 continue
 
@@ -1120,8 +1120,8 @@ async def api_search(
 
             results.append({
                 "text": r["text"],
-                "conversation": conv_map.get(str(r["metadata"]["channel"]), {"name": "Unknown", "type": "unknown"}),
-                "conversation_id": r["metadata"]["channel"],
+                "conversation": conv_map.get(str(r["metadata"]["conversation_id"]), {"name": "Unknown", "type": "unknown"}),
+                "conversation_id": r["metadata"]["conversation_id"],
                 "user": r["metadata"].get("user", "unknown"),
                 "ts": ts,
                 "score": r["similarity"],
