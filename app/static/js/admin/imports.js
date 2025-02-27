@@ -129,48 +129,37 @@ function startImport(uploadId) {
  * Poll for import progress
  */
 function pollProgress(uploadId) {
-    // Use the general import-status endpoint that we know works
+    // Get all uploads status
     fetch('/admin/import-status')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error ${response.status}`);
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            // Check if this upload is in the data
-            if (data[uploadId]) {
-                // Update UI with progress
-                UI.updateStatus(
-                    uploadId,
-                    data[uploadId].status,
-                    data[uploadId].progress,
-                    data[uploadId].progress_percent,
-                    data[uploadId].error_message
-                );
+            // Find the specific upload
+            const upload = data.find(u => u._id === uploadId);
+            if (!upload) return;
 
-                // Update action buttons
-                updateActions(uploadId, data[uploadId].status);
-                
-                // Continue polling if import is still in progress
-                if (['extracting', 'importing', 'training'].includes(data[uploadId].status.toLowerCase())) {
-                    setTimeout(() => pollProgress(uploadId), 2000);
-                } else if (data[uploadId].status.toLowerCase() === 'complete') {
-                    // If training is complete, stop polling
-                    console.log('Import and training complete');
-                } else if (data[uploadId].status.toLowerCase() === 'extracted') {
-                    // If extraction is complete but import hasn't started yet, poll less frequently
-                    setTimeout(() => pollProgress(uploadId), 5000);
-                }
-            } else {
-                // Upload not found in data, retry after delay
-                console.warn(`Upload ${uploadId} not found in import status data`);
+            // Normalize status to lowercase for consistent comparison
+            const statusLower = upload.status.toLowerCase();
+            
+            // Update the UI
+            UI.updateStatus(
+                uploadId,
+                upload.status,
+                upload.progress || '',
+                upload.progress_percent || 0,
+                upload.error || ''
+            );
+            
+            // Update action buttons
+            updateActions(uploadId, upload.status);
+            
+            // Continue polling if still in progress
+            if (['extracting', 'importing', 'training'].includes(statusLower)) {
                 setTimeout(() => pollProgress(uploadId), 2000);
             }
         })
         .catch(error => {
-            console.error('Error polling progress:', error);
-            // On error, continue polling but with a longer delay
+            console.error('Error polling for progress:', error);
+            // Try again after a delay
             setTimeout(() => pollProgress(uploadId), 5000);
         });
 }
@@ -290,11 +279,14 @@ function updateActions(uploadId, status) {
     const actionsCell = document.getElementById(`actions-cell-${uploadId}`);
     if (!actionsCell) return;
 
+    // Convert status to lowercase for consistent comparison
+    const statusLower = status.toLowerCase();
+
     // Clear existing buttons
     actionsCell.innerHTML = '';
 
     // Add appropriate buttons based on status
-    if (['uploaded', 'error', 'extracted'].includes(status.toLowerCase())) {
+    if (['uploaded', 'error', 'extracted'].includes(statusLower)) {
         // Start button
         const startBtn = document.createElement('button');
         startBtn.className = 'start-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';
@@ -309,7 +301,7 @@ function updateActions(uploadId, status) {
             startImport(uploadId);
         });
         actionsCell.appendChild(startBtn);
-    } else if (['extracting', 'importing', 'training'].includes(status.toLowerCase())) {
+    } else if (['extracting', 'importing', 'training'].includes(statusLower)) {
         // Cancel button
         const cancelBtn = document.createElement('button');
         cancelBtn.className = 'cancel-import-btn text-red-500 hover:text-red-400 transition-colors';
@@ -323,7 +315,7 @@ function updateActions(uploadId, status) {
             cancelImport(uploadId);
         });
         actionsCell.appendChild(cancelBtn);
-    } else if (['cancelled', 'error'].includes(status.toLowerCase())) {
+    } else if (['cancelled', 'canceled'].includes(statusLower)) {
         // Restart button
         const restartBtn = document.createElement('button');
         restartBtn.className = 'restart-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';

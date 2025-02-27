@@ -11,9 +11,12 @@ const UI = {
 
         let statusHtml = '';
         let statusClass = '';
+        
+        // Normalize status to lowercase for consistent comparison
+        const statusLower = status.toLowerCase();
 
         // Determine status class and HTML based on status
-        switch (status.toLowerCase()) {
+        switch (statusLower) {
             case 'extracting':
                 statusClass = 'bg-blue-900/50 text-blue-100';
                 statusHtml = `
@@ -79,6 +82,7 @@ const UI = {
                 break;
 
             case 'cancelled':
+            case 'canceled':
                 statusClass = 'bg-gray-700 text-gray-100';
                 statusHtml = `<span id="status-${uploadId}" class="${statusClass} px-2 py-1 rounded-full text-xs">Cancelled</span>`;
                 break;
@@ -90,5 +94,8 @@ const UI = {
 
         // Update the status cell
         statusCell.innerHTML = statusHtml;
+        
+        // Update the actions based on the status
+        updateActions(uploadId, status);
     }
 };
