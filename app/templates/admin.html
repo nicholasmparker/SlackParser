@@ -20,6 +20,9 @@
 <div class="max-w-7xl mx-auto px-4 py-4">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-bold text-gray-100">Admin Dashboard</h1>
+        <button id="clear-all-btn" class="btn btn-danger">
+            <i class="fas fa-trash"></i> Clear All Data
+        </button>
     </div>
 
     <!-- Tab Navigation -->
@@ -74,6 +77,27 @@
         </div>
     </div>
 </div>
+
+<script>
+    document.getElementById('clear-all-btn').addEventListener('click', function() {
+        if (confirm('Are you sure you want to clear all data? This action cannot be undone.')) {
+            fetch('/admin/clear-all')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('All data cleared successfully');
+                        window.location.reload();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error clearing data');
+                });
+        }
+    });
+</script>
 {% endblock %}
 
 {% block scripts %}
@@ -83,5 +107,6 @@
 <script src="{{ url_for('static', path='js/admin/upload.js') }}"></script>
 <script src="{{ url_for('static', path='js/admin/imports.js') }}"></script>
 <script src="{{ url_for('static', path='js/admin/clear-data.js') }}"></script>
+<script src="{{ url_for('static', path='js/admin/alerts.js') }}"></script>
 <script src="{{ url_for('static', path='js/admin/admin.js') }}"></script>
 {% endblock %}

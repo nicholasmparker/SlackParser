@@ -36,6 +36,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
             if (!confirm(`Are you sure you want to clear the following data: ${checkedItems}? This action cannot be undone.`)) {
                 e.preventDefault();
+            } else {
+                // Force a hard reload after submission completes
+                setTimeout(function() {
+                    window.location.reload();
+                }, 2000);
             }
         });
     }

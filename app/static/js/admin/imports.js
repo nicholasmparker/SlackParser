@@ -45,122 +45,177 @@ function attachImportButtonListeners() {
 /**
  * Poll for import status updates
  */
-function pollImportStatus() {
-    fetch('/admin/import-status')
-        .then(response => response.json())
-        .then(data => {
-            for (const uploadId in data) {
-                UI.updateStatus(
-                    uploadId,
-                    data[uploadId].status,
-                    data[uploadId].progress,
-                    data[uploadId].progress_percent,
-                    data[uploadId].error_message
-                );
-                updateActions(uploadId, data[uploadId].status);
-            }
+function pollImportStatus(uploadId) {
+    console.log("Polling import status for upload ID:", uploadId);
 
-            // Continue polling if there are active imports
-            const hasActiveImports = Object.values(data).some(item =>
-                ['extracting', 'importing', 'training'].includes(item.status.toLowerCase())
-            );
+    // Set up an interval to poll the status
+    const pollInterval = setInterval(() => {
+        fetch(`/admin/import-status/${uploadId}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log("Status update:", data);
 
-            if (hasActiveImports) {
-                setTimeout(pollImportStatus, 2000);
-            }
-        })
-        .catch(error => {
-            console.error('Error polling import status:', error);
-            setTimeout(pollImportStatus, 5000); // Retry after longer delay on error
-        });
+                // Update the progress bar
+                const progressBar = document.querySelector(`#upload-${uploadId} .progress-bar`);
+                const progressText = document.querySelector(`#upload-${uploadId} .progress-text`);
+
+                if (progressBar && progressText) {
+                    const percent = data.progress_percent || 0;
+                    progressBar.style.width = `${percent}%`;
+                    progressBar.setAttribute('aria-valuenow', percent);
+                    progressBar.textContent = `${percent}%`;
+                    progressText.textContent = data.progress || 'Importing...';
+                }
+
+                // Check if the import is complete or failed
+                if (data.status === "IMPORTED") {
+                    console.log("Import completed");
+                    clearInterval(pollInterval);
+
+                    // Update the UI
+                    const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+                    if (actionsContainer) {
+                        actionsContainer.innerHTML = `
+                            <div class="alert alert-success">
+                                Import completed successfully
+                            </div>
+                        `;
+                    }
+
+                    // Refresh the page after a short delay
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 3000);
+                } else if (data.status === "ERROR") {
+                    console.log("Import failed:", data.error);
+                    clearInterval(pollInterval);
+
+                    // Update the UI
+                    const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+                    if (actionsContainer) {
+                        actionsContainer.innerHTML = `
+                            <div class="alert alert-danger">
+                                Import failed: ${data.error || 'Unknown error'}
+                            </div>
+                            <button class="btn btn-warning" onclick="startImport('${uploadId}')">
+                                <i class="fas fa-redo"></i> Retry Import
+                            </button>
+                        `;
+                    }
+                }
+            })
+            .catch(error => {
+                console.error("Error polling status:", error);
+                // Don't clear the interval, just log the error and continue polling
+            });
+    }, 2000); // Poll every 2 seconds
+
+    // Store the interval ID in a global variable so we can clear it later
+    window.pollIntervals = window.pollIntervals || {};
+    window.pollIntervals[uploadId] = pollInterval;
 }
 
 /**
  * Start the import process for an upload
  */
 function startImport(uploadId) {
+    console.log("Starting import for upload ID:", uploadId);
+
     // Get the current status
-    fetch('/admin/import-status')
+    fetch(`/admin/import-status/${uploadId}`)
         .then(response => response.json())
         .then(data => {
-            const upload = data.find(u => u._id === uploadId);
-            if (!upload) {
-                showAlert('error', 'Upload not found');
-                return;
+            console.log("Current status:", data);
+
+            if (data.status === "UPLOADED") {
+                // Call the start-import endpoint for extraction
+                fetch(`/admin/import/${uploadId}/start`, {
+                    method: 'POST'
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! Status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log("Extraction started:", data);
+
+                        // Update the UI
+                        const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+                        if (actionsContainer) {
+                            actionsContainer.innerHTML = `
+                                <div class="progress-container">
+                                    <div class="progress">
+                                        <div class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                                    </div>
+                                    <div class="progress-text">Starting extraction...</div>
+                                </div>
+                            `;
+                        }
+
+                        // Start polling for status updates
+                        pollImportStatus(uploadId);
+                    })
+                    .catch(error => {
+                        console.error("Error starting extraction:", error);
+                        showError(`Error starting extraction: ${error.message}`);
+                    });
+            } else if (data.status === "EXTRACTED") {
+                // Call the start-import-process endpoint
+                fetch(`/admin/start-import-process/${uploadId}`, {
+                    method: 'POST'
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! Status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log("Import started:", data);
+
+                        // Update the UI
+                        const actionsContainer = document.querySelector(`#upload-${uploadId} .upload-actions`);
+                        if (actionsContainer) {
+                            actionsContainer.innerHTML = `
+                                <div class="progress-container">
+                                    <div class="progress">
+                                        <div class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                                    </div>
+                                    <div class="progress-text">Starting import...</div>
+                                </div>
+                            `;
+                        }
+
+                        // Start polling for status updates
+                        pollImportStatus(uploadId);
+                    })
+                    .catch(error => {
+                        console.error("Error starting import:", error);
+                        showError(`Error starting import: ${error.message}`);
+                    });
+            } else if (data.status === "IMPORTING") {
+                console.log("Import already in progress");
+                // Start polling for status updates
+                pollImportStatus(uploadId);
+            } else if (data.status === "IMPORTED") {
+                console.log("Import already completed");
+                showMessage("Import already completed");
+            } else if (data.status === "ERROR") {
+                console.log("Import failed:", data.error);
+                showError(`Import failed: ${data.error}`);
+            } else if (data.status === "EXTRACTING") {
+                console.log("Extraction in progress, cannot start import yet");
+                showMessage("Extraction in progress, please wait");
+            } else {
+                console.log("Unknown status:", data.status);
+                showError(`Unknown status: ${data.status}`);
             }
-
-            const statusLower = upload.status.toLowerCase();
-            let endpoint = '/admin/start-import/';
-
-            // If the upload is in EXTRACTED state, use the start-import-process endpoint
-            if (statusLower === 'extracted') {
-                endpoint = '/admin/start-import-process/';
-            }
-
-            // Send the request to start the import
-            fetch(`${endpoint}${uploadId}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showAlert('success', 'Import started');
-                    // Start polling for progress updates
-                    pollProgress(uploadId);
-                } else {
-                    showAlert('error', data.error || 'Failed to start import');
-                }
-            })
-            .catch(error => {
-                console.error('Error starting import:', error);
-                showAlert('error', 'Error starting import');
-            });
         })
         .catch(error => {
-            console.error('Error getting import status:', error);
-            showAlert('error', 'Error getting import status');
-        });
-}
-
-/**
- * Poll for import progress
- */
-function pollProgress(uploadId) {
-    // Get all uploads status
-    fetch('/admin/import-status')
-        .then(response => response.json())
-        .then(data => {
-            // Find the specific upload
-            const upload = data.find(u => u._id === uploadId);
-            if (!upload) return;
-
-            // Normalize status to lowercase for consistent comparison
-            const statusLower = upload.status.toLowerCase();
-            
-            // Update the UI
-            UI.updateStatus(
-                uploadId,
-                upload.status,
-                upload.progress || '',
-                upload.progress_percent || 0,
-                upload.error || ''
-            );
-            
-            // Update action buttons
-            updateActions(uploadId, upload.status);
-            
-            // Continue polling if still in progress
-            if (['extracting', 'importing', 'training'].includes(statusLower)) {
-                setTimeout(() => pollProgress(uploadId), 2000);
-            }
-        })
-        .catch(error => {
-            console.error('Error polling for progress:', error);
-            // Try again after a delay
-            setTimeout(() => pollProgress(uploadId), 5000);
+            console.error("Error getting status:", error);
+            showError(`Error getting status: ${error.message}`);
         });
 }
 
@@ -249,7 +304,7 @@ function restartImport(uploadId) {
     .then(data => {
         if (data.success) {
             // Start polling for progress
-            pollProgress(uploadId);
+            pollImportStatus(uploadId);
         } else {
             UI.updateStatus(uploadId, 'Error', data.error || 'Failed to restart import', 0);
 
@@ -329,5 +384,39 @@ function updateActions(uploadId, status) {
             restartImport(uploadId);
         });
         actionsCell.appendChild(restartBtn);
+    }
+}
+
+/**
+ * Show an error message
+ */
+function showError(message) {
+    const alertContainer = document.getElementById('alert-container');
+    if (alertContainer) {
+        alertContainer.innerHTML = `
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+    } else {
+        alert(message);
+    }
+}
+
+/**
+ * Show a success message
+ */
+function showMessage(message) {
+    const alertContainer = document.getElementById('alert-container');
+    if (alertContainer) {
+        alertContainer.innerHTML = `
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+    } else {
+        alert(message);
     }
 }
