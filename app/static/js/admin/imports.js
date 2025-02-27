@@ -76,53 +76,53 @@ function pollImportStatus() {
 }
 
 /**
- * Start an import
+ * Start the import process for an upload
  */
 function startImport(uploadId) {
-    // Update UI immediately
-    UI.updateStatus(uploadId, 'Starting...', '', 0);
-
-    // Disable the start button
-    const startBtn = document.querySelector(`.start-import-btn[data-upload-id="${uploadId}"]`);
-    if (startBtn) {
-        startBtn.disabled = true;
-        startBtn.classList.add('opacity-50', 'cursor-not-allowed');
-    }
-
-    // Send request to start import
-    fetch(`/admin/start-import/${uploadId}`, {
-        method: 'POST'
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            // Start polling for progress
-            pollProgress(uploadId);
-        } else {
-            UI.updateStatus(uploadId, 'Error', data.error || 'Failed to start import', 0);
-
-            // Re-enable the start button
-            if (startBtn) {
-                startBtn.disabled = false;
-                startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    // Get the current status
+    fetch('/admin/import-status')
+        .then(response => response.json())
+        .then(data => {
+            const upload = data.find(u => u._id === uploadId);
+            if (!upload) {
+                showAlert('error', 'Upload not found');
+                return;
             }
-        }
-    })
-    .catch(error => {
-        console.error('Error starting import:', error);
-        UI.updateStatus(uploadId, 'Error', error.message, 0);
 
-        // Re-enable the start button
-        if (startBtn) {
-            startBtn.disabled = false;
-            startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-        }
-    });
+            const statusLower = upload.status.toLowerCase();
+            let endpoint = '/admin/start-import/';
+
+            // If the upload is in EXTRACTED state, use the start-import-process endpoint
+            if (statusLower === 'extracted') {
+                endpoint = '/admin/start-import-process/';
+            }
+
+            // Send the request to start the import
+            fetch(`${endpoint}${uploadId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', 'Import started');
+                    // Start polling for progress updates
+                    pollProgress(uploadId);
+                } else {
+                    showAlert('error', data.error || 'Failed to start import');
+                }
+            })
+            .catch(error => {
+                console.error('Error starting import:', error);
+                showAlert('error', 'Error starting import');
+            });
+        })
+        .catch(error => {
+            console.error('Error getting import status:', error);
+            showAlert('error', 'Error getting import status');
+        });
 }
 
 /**
@@ -315,7 +315,7 @@ function updateActions(uploadId, status) {
             cancelImport(uploadId);
         });
         actionsCell.appendChild(cancelBtn);
-    } else if (['cancelled', 'canceled', 'complete', 'completed'].includes(statusLower)) {
+    } else if (['cancelled', 'canceled', 'completed'].includes(statusLower)) {
         // Restart button
         const restartBtn = document.createElement('button');
         restartBtn.className = 'restart-import-btn text-[#1264a3] hover:text-[#0b4d82] transition-colors';

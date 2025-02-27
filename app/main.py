@@ -1916,15 +1916,51 @@ async def extract_and_import(upload_id: str, file_path: str):
             {"_id": ObjectId(upload_id)},
             {"$set": {
                 "status": "EXTRACTED",
-                "progress": "Extraction complete",
+                "progress": "Extraction complete. Click play to start importing.",
                 "progress_percent": 100,
                 "updated_at": datetime.now(),
                 "current_stage": "EXTRACTED",
-                "stage_progress": 100
+                "stage_progress": 100,
+                "extract_path": temp_dir
             }}
         )
 
-        # Start the import process
+    except Exception as e:
+        logging.error(f"Error in extract_and_import: {str(e)}")
+        # Update status to ERROR
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "ERROR",
+                "progress": f"Error: {str(e)}",
+                "updated_at": datetime.now(),
+                "error": str(e)
+            }}
+        )
+        # Clean up the temporary directory if it exists
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+async def start_import_process(upload_id: str):
+    """Start the import process for an extracted upload"""
+    try:
+        # Get the upload
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+
+        # Check if the extract path exists
+        extract_path = upload.get("extract_path")
+        if not extract_path or not os.path.exists(extract_path):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Extracted files not found"}
+            )
+
+        # Update status to IMPORTING
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
@@ -1956,10 +1992,13 @@ async def extract_and_import(upload_id: str, file_path: str):
         )
 
         # Clean up the temporary directory
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(extract_path, ignore_errors=True)
 
+        return JSONResponse(
+            content={"success": True, "message": "Import completed successfully"}
+        )
     except Exception as e:
-        logging.error(f"Error in extract_and_import: {str(e)}")
+        logging.error(f"Error in start_import_process: {str(e)}")
         # Update status to ERROR
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1970,6 +2009,40 @@ async def extract_and_import(upload_id: str, file_path: str):
                 "error": str(e)
             }}
         )
-        # Clean up the temporary directory if it exists
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+@app.post("/admin/start-import-process/{upload_id}")
+async def start_import_endpoint(upload_id: str):
+    """Start the import process for an extracted upload"""
+    try:
+        # Get the upload
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+
+        # Check if the upload is in the correct state
+        status = upload.get("status", "").lower()
+        if status != "extracted":
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": f"Upload is not in EXTRACTED state (current: {status})"}
+            )
+
+        # Start the import process in the background
+        asyncio.create_task(start_import_process(upload_id))
+
+        return JSONResponse(
+            content={"success": True, "message": "Import process started"}
+        )
+    except Exception as e:
+        logging.error(f"Error starting import process: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
