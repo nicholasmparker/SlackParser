@@ -166,9 +166,17 @@ function startImport(uploadId) {
                 fetch(`/admin/start-import-process/${uploadId}`, {
                     method: 'POST'
                 })
-                    .then(response => {
+                    .then(async response => {
                         if (!response.ok) {
-                            throw new Error(`HTTP error! Status: ${response.status}`);
+                            // Try to get the error message from the response
+                            let errorText = "";
+                            try {
+                                const errorData = await response.json();
+                                errorText = errorData.error || `HTTP error! Status: ${response.status}`;
+                            } catch (e) {
+                                errorText = `HTTP error! Status: ${response.status}`;
+                            }
+                            throw new Error(errorText);
                         }
                         return response.json();
                     })

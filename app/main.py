@@ -3,8 +3,9 @@ from fastapi import FastAPI, Request, Query, HTTPException, Body, File, UploadFi
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 import os
 import json
 import logging
@@ -146,6 +147,10 @@ def startup_db_client():
         # Initialize MongoDB client
         app.mongodb_client = AsyncIOMotorClient(MONGO_URL)
         app.db = app.mongodb_client[MONGO_DB]
+        
+        # Initialize synchronous MongoDB client for threaded operations
+        app.mongo_sync_client = MongoClient(MONGO_URL)
+        app.sync_db = app.mongo_sync_client[MONGO_DB]
         logger.info(f"Connected to MongoDB at {MONGO_URL}")
 
         # Initialize ChromaDB client
@@ -162,6 +167,9 @@ def startup_db_client():
 async def shutdown_db_client():
     """Close MongoDB connection on shutdown"""
     if hasattr(app, "mongodb_client"):
+        if hasattr(app, "mongo_sync_client"):
+            app.mongo_sync_client.close()
+            logger.info("Closed synchronous MongoDB connection")
         app.mongodb_client.close()
         logger.info("Closed MongoDB connection")
 
@@ -1679,15 +1687,17 @@ def extract_with_progress_sync(db, zip_path: str, extract_path: Path, upload_id:
 
 def import_slack_export_sync(db, extract_path: Path, upload_id: str):
     """Import a Slack export file - synchronous version"""
-    print(f"=== IMPORT_SLACK_EXPORT_SYNC STARTED ===")
-    print(f"Importing from {extract_path}")
-    print(f"Upload ID: {upload_id}")
-    print(f"DB type: {type(db)}")
+    print(f"\n\n=== IMPORT_SLACK_EXPORT_SYNC STARTED FOR {upload_id} ===")
+    print(f"Importing from {extract_path}, exists: {extract_path.exists()}")
+    print(f"Upload ID: {upload_id}, type: {type(upload_id)}")
+    print(f"DB type: {type(db)}, collections: {db.list_collection_names() if hasattr(db, 'list_collection_names') else 'unknown'}")
+    print(f"Directory contents: {list(extract_path.iterdir()) if extract_path.exists() else 'directory does not exist'}")
 
     # Convert upload_id to ObjectId if it's a string
     if isinstance(upload_id, str):
         upload_id = ObjectId(upload_id)
         print(f"Converted upload_id to ObjectId: {upload_id}")
+    print(f"Using upload_id: {upload_id}")
 
     # Update status to IMPORTING
     try:
@@ -1703,33 +1713,60 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         print("Updated status to IMPORTING")
     except Exception as e:
         print(f"Error updating status to IMPORTING: {e}")
-
+        import traceback; traceback.print_exc()
     # Get list of channel files
     try:
-        channel_files = list(extract_path.glob("**/*.txt"))
+        # Only include files from channels and dms directories, skip files directory
+        channel_files = []
+        
+        # Process channels directory
+        channels_dir = extract_path / "channels"
+        if channels_dir.exists() and channels_dir.is_dir():
+            print(f"Processing channels directory: {channels_dir}")
+            channel_files.extend(list(channels_dir.rglob("*.txt")))
+            
+        # Process dms directory
+        dms_dir = extract_path / "dms"
+        if dms_dir.exists() and dms_dir.is_dir():
+            print(f"Processing dms directory: {dms_dir}")
+            channel_files.extend(list(dms_dir.rglob("*.txt")))
+            
         total_files = len(channel_files)
-        print(f"Found {total_files} channel files in {extract_path}")
+        print(f"Found {total_files} channel files in channels and dms directories")
 
         if total_files == 0:
-            print(f"WARNING: No channel files found in {extract_path}")
+            print(f"WARNING: No channel files found in channels or dms directories")
             # List the directory contents to debug
             print(f"Directory contents of {extract_path}:")
             for item in extract_path.iterdir():
-                print(f"  - {item}")
+                print(f"  - {item} (is_dir: {item.is_dir()}, exists: {item.exists()})")
+                
+                # If it's a directory, check its contents too
+                if item.is_dir():
+                    print(f"    Contents of {item}:")
+                    try:
+                        for subitem in item.iterdir():
+                            print(f"      - {subitem}")
+                    except Exception as e:
+                        print(f"      Error listing contents: {e}")
     except Exception as e:
         print(f"Error getting channel files: {e}")
         total_files = 0
+        channel_files = []
         channel_files = []
 
     # Process each channel file
     total_messages = 0
     users = {}  # Track users across all files
+    processed_files = 0
 
     for i, channel_file in enumerate(channel_files):
         print(f"Processing file {i+1}/{total_files}: {channel_file}")
         try:
-            # Process the file
-            channel, messages = process_file(db, channel_file, upload_id, sync=True)
+            # Process the file using the synchronous version
+            print(f"Calling process_file_sync for {channel_file}")
+            channel, messages = process_file_sync(db, channel_file, upload_id)
+            print(f"Successfully processed {channel_file}, got channel {channel.name} with {len(messages)} messages")
 
             # Store channel metadata
             print(f"Storing channel metadata for {channel.name}")
@@ -1797,7 +1834,9 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
                 }}
             )
             print(f"Updated progress: {percent}%")
+            processed_files += 1
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"Error processing {channel_file}: {e}")
             # Log the error but continue with other files
             db.failed_imports.insert_one({
@@ -1806,6 +1845,8 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
                 "error": str(e),
                 "timestamp": datetime.utcnow()
             })
+
+    print(f"Processed {processed_files}/{total_files} files with {total_messages} messages")
 
     # Insert/update users
     for username, user in users.items():
@@ -1838,8 +1879,9 @@ def import_slack_export_sync(db, extract_path: Path, upload_id: str):
         print(f"Updated status to IMPORTED. Processed {total_files} files with {total_messages} messages.")
     except Exception as e:
         print(f"Error updating status to IMPORTED: {e}")
+        import traceback; traceback.print_exc()
 
-    print("=== IMPORT_SLACK_EXPORT_SYNC COMPLETED ===")
+    print(f"=== IMPORT_SLACK_EXPORT_SYNC COMPLETED FOR {upload_id} ===\n\n")
 
 @app.get("/admin/debug", response_class=HTMLResponse)
 async def debug_page(request: Request):
@@ -1873,6 +1915,7 @@ async def start_import(upload_id: str):
     try:
         # Get the upload
         upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        print(f"start_import_endpoint: Found upload: {upload}")
         if not upload:
             return JSONResponse(
                 status_code=404,
@@ -1916,7 +1959,7 @@ async def start_import(upload_id: str):
 
 async def start_import_process(upload_id: str):
     """Start the import process for an extracted upload"""
-    try:
+    try:        
         # Get the upload
         upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
         if not upload:
@@ -1927,10 +1970,15 @@ async def start_import_process(upload_id: str):
 
         # Check if the extract path exists
         extract_path = upload.get("extract_path")
-        if not extract_path or not os.path.exists(extract_path):
+        print(f"Extract path from database: {extract_path}")
+        
+        # Convert to Path object and check if it exists
+        extract_path_obj = Path(extract_path) if extract_path else None
+        if not extract_path_obj or not extract_path_obj.exists():
+            print(f"Extract path does not exist: {extract_path_obj}")
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "Extracted files not found"}
+                content={"success": False, "error": f"Extracted files not found at {extract_path_obj}"}
             )
 
         # Update status to IMPORTING
@@ -1947,33 +1995,60 @@ async def start_import_process(upload_id: str):
         )
 
         # Find the actual Slack export directory (it's usually a subdirectory)
-        extract_path_obj = Path(extract_path)
-        slack_export_dirs = list(extract_path_obj.glob("slack-export*"))
+        print(f"Looking for Slack export directory in {extract_path_obj}")
+        print(f"Directory exists: {extract_path_obj.exists()}")
+        
+        # List all directories to see what's available
+        if extract_path_obj.exists():
+            print("Contents of extract directory:")
+            for item in extract_path_obj.iterdir():
+                print(f"  - {item} (is_dir: {item.is_dir()})")
+        
+        # Try different patterns to find the Slack export directory
+        slack_export_dirs = list(extract_path_obj.glob("slack-export*")) or \
+                           list(extract_path_obj.glob("*slack*")) or \
+                           [d for d in extract_path_obj.iterdir() if d.is_dir()]
+        
         if slack_export_dirs:
+            print(f"Found Slack export subdirectories: {slack_export_dirs}")
             extract_path_obj = slack_export_dirs[0]
-            logging.info(f"Found Slack export directory: {extract_path_obj}")
+            print(f"Using Slack export directory: {extract_path_obj}")
 
-        # Start the import in a background thread
-        thread = threading.Thread(
-            target=import_slack_export_sync,
-            args=(app.sync_db, extract_path_obj, upload_id)
+        # Update status to IMPORTING
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "IMPORTING",
+                "progress": "Starting import process...",
+                "progress_percent": 0,
+                "updated_at": datetime.utcnow(),
+                "current_stage": "IMPORTING",
+                "stage_progress": 0
+            }}
         )
-        thread.daemon = True
-        thread.start()
-        logging.info(f"Started import thread: {thread.name}")
+        
+        # Start the import in a separate thread
+        def start_thread():
+            try:
+                import_slack_export_sync(app.sync_db, extract_path_obj, upload_id)
+            except Exception as e:
+                print(f"Error in import thread: {e}")
+                import traceback; traceback.print_exc()
+        
+        threading.Thread(name=f"import-{upload_id}", target=start_thread, daemon=True).start()
+        print(f"Started import thread for {upload_id}")
 
-        return JSONResponse(
-            content={"success": True, "message": "Import started successfully"}
-        )
-    except Exception as e:
+        return {"success": True, "message": "Import started successfully"}
+    except Exception as e:        
         logging.error(f"Error in start_import_process: {str(e)}")
         # Update status to ERROR
+        import traceback; traceback.print_exc()
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
             {"$set": {
                 "status": "ERROR",
                 "progress": f"Error: {str(e)}",
-                "updated_at": datetime.now(),
+                "updated_at": datetime.utcnow(),
                 "error": str(e)
             }}
         )
@@ -1996,6 +2071,7 @@ async def start_import_endpoint(upload_id: str):
 
         # Check if the upload is in the correct state
         status = upload.get("status", "").lower()
+        print(f"start_import_endpoint: Upload status: {status}")
         if status != "extracted":
             return JSONResponse(
                 status_code=400,
@@ -2003,11 +2079,17 @@ async def start_import_endpoint(upload_id: str):
             )
 
         # Start the import process in the background
-        asyncio.create_task(start_import_process(upload_id))
-
-        return JSONResponse(
-            content={"success": True, "message": "Import process started"}
-        )
+        try:
+            # Call directly instead of creating a task
+            print(f"start_import_endpoint: Calling start_import_process for {upload_id}")
+            result = await start_import_process(upload_id)
+            print(f"Import process started with result: {result}")
+            return result
+        except Exception as e:
+            logging.error(f"Error starting import process: {str(e)}")
+            import traceback; traceback.print_exc()
+            return JSONResponse(status_code=500, 
+                content={"success": False, "error": f"Error starting import: {str(e)}"})
     except Exception as e:
         logging.error(f"Error starting import process: {str(e)}")
         return JSONResponse(
@@ -2015,11 +2097,42 @@ async def start_import_endpoint(upload_id: str):
             content={"success": False, "error": str(e)}
         )
 
+@app.get("/admin/check-uploads")
+async def check_uploads():
+    """Check all uploads in the MongoDB collection"""
+    try:
+        # Get all uploads
+        uploads = await app.db.uploads.find().to_list(length=100)
+        
+        # Format for display
+        result = []
+        for upload in uploads:
+            # Convert ObjectId to string
+            upload_id = str(upload.get("_id", ""))
+            
+            # Check if extract path exists
+            extract_path = upload.get("extract_path", "")
+            path_exists = os.path.exists(extract_path) if extract_path else False
+            
+            result.append({
+                "id": upload_id,
+                "status": upload.get("status", ""),
+                "extract_path": extract_path,
+                "path_exists": path_exists
+            })
+            
+        return {"uploads": result}
+    except Exception as e:
+        return {"error": str(e)}
+
 async def extract_and_import(upload_id: str, file_path: str):
     """Extract and import a Slack export file"""
     try:
         # Create extraction directory in the mounted volume
-        extract_dir = f"/data/extracts/{upload_id}"
+        # Use DATA_DIR environment variable to ensure consistency
+        extract_dir = os.path.join(DATA_DIR, "extracts", upload_id)
+        print(f"Creating extraction directory: {extract_dir}")
+        print(f"DATA_DIR: {DATA_DIR}, exists: {os.path.exists(DATA_DIR)}")
         os.makedirs(extract_dir, exist_ok=True)
 
         # Extract the ZIP file
@@ -2054,6 +2167,7 @@ async def extract_and_import(upload_id: str, file_path: str):
                 "extract_path": extract_dir
             }}
         )
+        print(f"Updated extract_path to {extract_dir}, exists: {os.path.exists(extract_dir)}")
 
     except Exception as e:
         logging.error(f"Error in extract_and_import: {str(e)}")
@@ -2070,3 +2184,96 @@ async def extract_and_import(upload_id: str, file_path: str):
         # Clean up the extraction directory if it exists
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir, ignore_errors=True)
+
+# Create a synchronous version of process_file
+def process_file_sync(db, file_path: Path, upload_id: ObjectId) -> Tuple[Channel, List[Message]]:
+    """Synchronous version of process_file.
+
+    Args:
+        db: MongoDB client
+        file_path: Path to file
+        upload_id: ID of upload
+
+    Returns:
+        Tuple of (channel metadata, list of messages)
+    """
+    try:
+        print(f"process_file_sync: Processing {file_path}")
+        print(f"File exists: {file_path.exists()}, size: {file_path.stat().st_size if file_path.exists() else 'N/A'}")
+        
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+            print(f"Read {len(lines)} lines from {file_path}")
+        except UnicodeDecodeError:
+            print(f"Unicode decode error, trying with errors='replace'")
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+            print(f"Read {len(lines)} lines with error replacement")
+
+        # Split metadata and messages
+        try:
+            separator_idx = lines.index("#################################################################")
+            print(f"Found separator at line {separator_idx}")
+        except ValueError:
+            print(f"No separator found in {file_path}, first 10 lines: {lines[:10]}")
+            # This might be a non-message file, skip it
+            raise ImportError(f"Invalid file format: missing separator in {file_path}, might not be a message file")
+
+        metadata_lines = lines[:separator_idx]
+        message_lines = lines[separator_idx + 2:]  # Skip separator and "Messages:" line
+        print(f"Metadata lines: {len(metadata_lines)}, Message lines: {len(message_lines)}")
+
+        # Parse metadata
+        try:
+            if metadata_lines and "Private conversation between" in metadata_lines[0]:
+                print("Parsing DM metadata")
+                channel = parse_dm_metadata(metadata_lines)
+            else:
+                print("Parsing channel metadata")
+                channel = parse_channel_metadata(metadata_lines)
+            print(f"Parsed channel: {channel.name}, ID: {channel.id}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Error parsing metadata: {e}")
+            raise ImportError(f"Error parsing metadata: {e}")
+
+        # Parse messages
+        messages = []
+        if message_lines:
+            for i, line in enumerate(message_lines, 1):
+                line = line.strip()
+                if not line or line.startswith("----"):  # Skip date headers
+                    continue
+
+                try:
+                    msg = parse_message(line, i)
+                    if msg:
+                        # Set the channel_id on the message
+                        msg.channel_id = channel.id
+                        messages.append(msg)
+                except ParserError as e:
+                    # Log error but continue processing
+                    print(f"Error parsing message in {file_path} at line {i}: {str(e)}")
+                    try:
+                        db.failed_imports.insert_one({
+                            "file": str(file_path),
+                            "line_number": i,
+                            "line": line,
+                            "error": str(e),
+                            "upload_id": upload_id,
+                            "timestamp": datetime.utcnow()
+                        })
+                    except Exception as db_err:
+                        print(f"Error logging failed message: {db_err}")
+        
+        print(f"Parsed {len(messages)} messages from {file_path}")
+
+        return channel, messages
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error processing file {file_path}: {str(e)}")
+        raise ImportError(f"Error processing file {file_path}: {str(e)}")
