@@ -1360,68 +1360,61 @@ async def health_check():
 
     return status
 
-@app.post("/api/restart_import/{upload_id}")
+@app.post("/admin/restart-import/{upload_id}")
 async def restart_import(upload_id: str):
-    """Restart a failed or uploaded import"""
+    """Restart a cancelled or failed import"""
     try:
-        # Get the upload record
-        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        # Convert the upload_id string to ObjectId
+        upload_oid = ObjectId(upload_id)
+        
+        # Find the upload in the database
+        upload = await app.db.uploads.find_one({"_id": upload_oid})
+        
         if not upload:
-            raise HTTPException(status_code=404, detail="Upload not found")
-
-        # Only allow restarting failed, cancelled, or uploaded imports
-        if upload["status"] not in ["ERROR", "cancelled", "UPLOADED"]:
-            raise HTTPException(status_code=400, detail="Can only restart failed, cancelled, or uploaded imports")
-
-        # Start the import
-        file_path = Path(upload["file_path"])
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail="Upload file not found")
-
-        # Update status to start fresh
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+        
+        # Check if the file exists
+        file_path = upload.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Upload file not found"}
+            )
+        
+        # Update status to extracting
         await app.db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
+            {"_id": upload_oid},
             {"$set": {
-                "status": "UPLOADED",
-                "error": None,
-                "progress": None,
+                "status": "EXTRACTING",
+                "progress": "Starting extraction...",
                 "progress_percent": 0,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(),
+                "current_stage": "EXTRACTING",
+                "stage_progress": 0,
+                "error": None
             }}
         )
-
-        # Get extract path
-        extract_path = Path("/data/extracts") / str(upload_id)
-
-        # Start import in background
-        task = asyncio.create_task(
-            import_slack_export(app.db, extract_path, str(upload_id))
+        
+        # Start the extraction process in the background
+        asyncio.create_task(extract_and_import(upload_id, file_path))
+        
+        return JSONResponse(
+            content={"success": True, "message": "Import restarted"}
         )
-
-        # Add error handling for the background task
-        def handle_import_completion(task):
-            try:
-                task.result()  # This will raise any exceptions from the task
-            except Exception as e:
-                logger.exception("Import failed")
-                asyncio.create_task(
-                    app.db.uploads.update_one(
-                        {"_id": ObjectId(upload_id)},
-                        {"$set": {
-                            "status": "ERROR",
-                            "error": str(e),
-                            "updated_at": datetime.utcnow()
-                        }}
-                    )
-                )
-
-        task.add_done_callback(handle_import_completion)
-
-        return {"status": "success"}
-
+    except InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Invalid upload ID format"}
+        )
     except Exception as e:
-        logger.error(f"Error restarting import: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error restarting import: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
 
 async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload_id: str) -> None:
     """Import a Slack export file"""
