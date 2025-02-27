@@ -1,6 +1,6 @@
 services:
   web:
-    image: ghcr.io/nicholasmparker/slackparser:latest
+    image: ghcr.io/nicholasmparker/slackparser:v1.1.0
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -9,9 +9,9 @@ services:
       - MONGO_DB=slack_data
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
+      - OLLAMA_URL=http://ollama:11434
       - FILE_STORAGE=/app/file_storage
       - DATA_DIR=/app/data
-      - OLLAMA_URL=http://ollama:11434
     volumes:
       - file_storage:/app/file_storage
       - data:/app/data

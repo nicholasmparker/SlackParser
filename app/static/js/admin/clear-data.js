@@ -10,7 +10,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (clearAllBtn) {
         clearAllBtn.addEventListener('click', function() {
             if (confirm('Are you sure you want to clear ALL data? This action cannot be undone.')) {
-                fetch('/admin/clear-all')
+                // Show loading indicator or disable button
+                clearAllBtn.disabled = true;
+                clearAllBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Clearing...';
+
+                fetch('/admin/clear-all', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({}) // Send empty JSON object
+                })
                     .then(response => {
                         if (!response.ok) {
                             throw new Error(`HTTP error! Status: ${response.status}`);
@@ -19,17 +29,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     })
                     .then(data => {
                         if (data.status === 'success') {
-                            alert('All data cleared successfully!');
+                            // Success - reload without alert
                             window.location.reload();
                         } else {
-                            alert('Error clearing data: ' + data.message);
+                            alert('Error clearing data: ' + (data.message || 'Unknown error'));
                         }
                     })
                     .catch(error => {
                         console.error('Error:', error);
-                        // Still reload the page since the data might have been cleared
-                        alert('There was an error, but data may have been cleared. Reloading page...');
-                        window.location.reload();
+                        alert('Error clearing data: ' + error.message);
+                        // Re-enable button
+                        clearAllBtn.disabled = false;
+                        clearAllBtn.innerHTML = '<i class="fas fa-trash"></i> Clear All Data';
                     });
             }
         });
@@ -51,27 +62,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Add event listeners to checkboxes
-    clearCheckboxes.forEach(cb => {
-        cb.addEventListener('change', updateClearButton);
+    clearCheckboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', updateClearButton);
     });
 
-    // Add confirmation to form submission
-    const clearDataForm = document.getElementById('clearDataForm');
-    if (clearDataForm) {
-        clearDataForm.addEventListener('submit', function(e) {
-            const checkedItems = Array.from(clearCheckboxes)
-                .filter(cb => cb.checked)
-                .map(cb => cb.id.replace('clear', ''))
-                .join(', ');
-
-            if (!confirm(`Are you sure you want to clear the following data: ${checkedItems}? This action cannot be undone.`)) {
-                e.preventDefault();
-            } else {
-                // Force a hard reload after submission completes
-                setTimeout(function() {
-                    window.location.reload();
-                }, 2000);
-            }
-        });
-    }
+    // Initialize button state
+    updateClearButton();
 });

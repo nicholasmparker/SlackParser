@@ -1,5 +1,17 @@
 {% extends "base.html" %}
 
+{% block head %}
+{{ super() }}
+<style>
+    /* Highlight search matches */
+    .search-highlight {
+        background-color: rgba(255, 255, 0, 0.3);
+        padding: 0 2px;
+        border-radius: 2px;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="max-w-5xl mx-auto px-4 py-2">
     <!-- Conversation header -->
@@ -11,37 +23,70 @@
 
     <!-- Search box -->
     <div class="mb-4">
-        <form method="GET" class="relative">
-            <input type="text" 
-                name="q" 
+        <form method="GET" class="relative flex items-center">
+            <input type="text"
+                id="search-input"
+                name="q"
                 value="{{ q or '' }}"
-                placeholder="Search in conversation..." 
-                class="w-full pl-3 pr-4 py-1.5 bg-[#222529] text-gray-100 rounded border border-gray-700 focus:outline-none focus:border-gray-500 text-sm">
+                placeholder="Search in conversation..."
+                class="w-full pl-3 pr-4 py-1.5 bg-[#222529] text-gray-100 rounded-l border border-gray-700 focus:outline-none focus:border-gray-500 text-sm">
+            <button type="submit" class="bg-[#1264a3] hover:bg-[#0b5c94] text-white px-3 py-1.5 text-sm rounded-r border border-[#1264a3]">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </button>
+            {% if q %}
+            <a href="/conversations/{{ conversation._id }}" class="ml-2 bg-[#333] hover:bg-[#444] text-white px-2 py-1.5 text-sm rounded border border-gray-700 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear
+            </a>
+            {% endif %}
         </form>
     </div>
+
+    {% if q %}
+    <div class="mb-4 bg-[#222529] p-2 rounded border border-gray-700 text-sm text-gray-300">
+        <span id="search-results-count">0</span> results found for "<span class="text-white font-medium">{{ q }}</span>"
+        <span class="float-right">
+            <button id="prev-match" class="text-gray-300 hover:text-white px-1 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+            </button>
+            <span id="current-match">0</span> of <span id="total-matches">0</span>
+            <button id="next-match" class="text-gray-300 hover:text-white px-1 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+            </button>
+        </span>
+    </div>
+    {% endif %}
 
     <!-- Messages -->
     {% if messages %}
     <div class="space-y-0.5">
         {% for message in messages %}
-        <div class="flex items-start gap-2 py-0.5 px-1 hover:bg-[#222529] rounded">
+        <div class="flex items-start gap-2 py-0.5 px-1 hover:bg-[#222529] rounded message-container">
             <!-- Avatar -->
             <div class="w-7 h-7 rounded-sm bg-blue-600 flex-shrink-0 flex items-center justify-center text-white text-sm">
                 {{ message.user_name[0]|lower }}
             </div>
-            
+
             <!-- Message content -->
             <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-2">
                     <span class="font-bold">{{ message.user_name }}</span>
-                    <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}" 
+                    <time datetime="{{ message.ts|strftime('%Y-%m-%d %H:%M:%S') }}"
                           class="text-xs text-gray-400">
                         {{ message.ts|strftime("%Y-%m-%d %I:%M %p")|lower }}
                     </time>
                 </div>
-                
-                <div class="text-gray-100 leading-snug">{{ message.text }}</div>
-                
+
+                <div class="text-gray-100 leading-snug message-text">{{ message.text }}</div>
+
                 {% if message.files %}
                 <div class="mt-1 space-y-1">
                     {% for file in message.files %}
@@ -54,7 +99,7 @@
                     {% endfor %}
                 </div>
                 {% endif %}
-                
+
                 {% if message.reactions %}
                 <div class="mt-1 flex flex-wrap gap-1">
                     {% for reaction in message.reactions %}
@@ -73,16 +118,16 @@
     {% if total_pages > 1 %}
     <div class="mt-4 flex justify-center gap-2 text-sm">
         {% if page > 1 %}
-        <a href="?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}" 
+        <a href="?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
            class="px-2 py-1 bg-[#222529] rounded hover:bg-[#2C2F33]">
             Previous
         </a>
         {% endif %}
-        
+
         <span class="px-2 py-1 text-gray-400">
             Page {{ page }} of {{ total_pages }}
         </span>
-        
+
         {% if page < total_pages %}
         <a href="?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
            class="px-2 py-1 bg-[#222529] rounded hover:bg-[#2C2F33]">
@@ -97,4 +142,112 @@
     </div>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{% if q %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchTerm = "{{ q }}";
+        const messageTexts = document.querySelectorAll('.message-text');
+        const searchResultsCount = document.getElementById('search-results-count');
+        const currentMatchEl = document.getElementById('current-match');
+        const totalMatchesEl = document.getElementById('total-matches');
+        const prevMatchBtn = document.getElementById('prev-match');
+        const nextMatchBtn = document.getElementById('next-match');
+
+        let matches = [];
+        let currentMatchIndex = -1;
+
+        // Highlight search term in message texts
+        messageTexts.forEach((messageText, messageIndex) => {
+            const text = messageText.innerHTML;
+            if (text.toLowerCase().includes(searchTerm.toLowerCase())) {
+                // Create a regex that's case insensitive
+                const regex = new RegExp(searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+
+                // Replace with highlighted version
+                messageText.innerHTML = text.replace(regex, match => {
+                    matches.push({
+                        messageIndex,
+                        element: null // Will be set after DOM is updated
+                    });
+                    return `<span class="search-highlight" data-match-index="${matches.length - 1}">${match}</span>`;
+                });
+            }
+        });
+
+        // After DOM update, get all highlight elements
+        setTimeout(() => {
+            const highlightElements = document.querySelectorAll('.search-highlight');
+            highlightElements.forEach((el, i) => {
+                const matchIndex = parseInt(el.getAttribute('data-match-index'));
+                matches[matchIndex].element = el;
+            });
+
+            // Update counts
+            searchResultsCount.textContent = matches.length;
+            totalMatchesEl.textContent = matches.length;
+
+            if (matches.length > 0) {
+                currentMatchIndex = 0;
+                currentMatchEl.textContent = 1;
+                highlightCurrentMatch();
+
+                // Enable navigation buttons
+                prevMatchBtn.disabled = false;
+                nextMatchBtn.disabled = false;
+            }
+        }, 0);
+
+        // Function to highlight current match
+        function highlightCurrentMatch() {
+            // Remove current highlight
+            document.querySelectorAll('.search-highlight').forEach(el => {
+                el.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+            });
+
+            // Add current highlight
+            if (currentMatchIndex >= 0 && currentMatchIndex < matches.length) {
+                const match = matches[currentMatchIndex];
+                match.element.style.backgroundColor = 'rgba(255, 165, 0, 0.6)';
+                match.element.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+                currentMatchEl.textContent = currentMatchIndex + 1;
+            }
+        }
+
+        // Event listeners for navigation buttons
+        prevMatchBtn.addEventListener('click', () => {
+            if (matches.length === 0) return;
+
+            currentMatchIndex = (currentMatchIndex - 1 + matches.length) % matches.length;
+            highlightCurrentMatch();
+        });
+
+        nextMatchBtn.addEventListener('click', () => {
+            if (matches.length === 0) return;
+
+            currentMatchIndex = (currentMatchIndex + 1) % matches.length;
+            highlightCurrentMatch();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                // Ctrl+Enter to go to next match
+                nextMatchBtn.click();
+                e.preventDefault();
+            } else if (e.key === 'Enter' && e.shiftKey) {
+                // Shift+Enter to go to previous match
+                prevMatchBtn.click();
+                e.preventDefault();
+            }
+        });
+    });
+</script>
+{% endif %}
 {% endblock %}
