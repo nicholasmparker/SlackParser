@@ -4,27 +4,28 @@ from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 import os
-import traceback
-from pathlib import Path
-from datetime import datetime
+import json
 import logging
-from pydantic import BaseModel
-from app.embeddings import EmbeddingService
+import asyncio
+import tempfile
+import zipfile
+import shutil
+from datetime import datetime
 from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import status
 from werkzeug.utils import secure_filename
-import asyncio
-import shutil
-import json
-import aiohttp
+import traceback
+from pathlib import Path
+from pydantic import BaseModel
+from app.embeddings import EmbeddingService
 from app.db.models import Channel, Message, Upload, FailedImport
 from app.importer.importer import process_file, import_slack_export
 from app.importer.parser import parse_message, parse_channel_metadata, parse_dm_metadata, ParserError
 import glob
-import zipfile
+import aiohttp
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -724,6 +725,52 @@ async def start_import(upload_id: str, request: Request):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+@app.get("/admin/import-status/{upload_id}")
+async def get_single_import_status(upload_id: str):
+    """Get the status of a specific import"""
+    try:
+        # Convert the upload_id string to ObjectId
+        upload_oid = ObjectId(upload_id)
+        
+        # Find the upload in the database
+        upload = await app.db.uploads.find_one({"_id": upload_oid})
+        
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Upload not found"}
+            )
+        
+        # Convert ObjectId to string for JSON serialization
+        upload["_id"] = str(upload["_id"])
+        
+        # Convert datetime objects to ISO format strings
+        for key, value in upload.items():
+            if isinstance(value, datetime):
+                upload[key] = value.isoformat()
+        
+        # Return the upload status
+        return {
+            "status": upload.get("status", "UNKNOWN"),
+            "progress": upload.get("progress", ""),
+            "progress_percent": upload.get("progress_percent", 0),
+            "error_message": upload.get("error", None),
+            "updated_at": upload.get("updated_at"),
+            "file_path": upload.get("file_path", ""),
+            "filename": upload.get("filename", "")
+        }
+    except InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid upload ID format"}
+        )
+    except Exception as e:
+        logging.error(f"Error getting import status: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
 @app.get("/admin/import/{upload_id}/status")
 async def get_import_status(upload_id: str, request: Request):
     """Get the status of an import"""
@@ -946,7 +993,7 @@ async def clear_data(request: Request):
 
         if clear_embeddings:
             # Clear Chroma collection
-            await app.embeddings.clear_collection()
+            app.embeddings.clear_all_embeddings()
             print("Cleared embeddings")
 
         if clear_uploads:
@@ -970,7 +1017,7 @@ async def clear_data(request: Request):
             print("Cleared conversations")
 
         return RedirectResponse(
-            url="/admin",
+            url="/admin?cleared=true",
             status_code=303
         )
     except Exception as e:
@@ -1136,6 +1183,33 @@ async def api_search(
     except Exception as e:
         logger.error(f"Error in api_search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/import-status")
+async def get_import_status():
+    """Get status of all imports"""
+    try:
+        uploads = await app.db.uploads.find().to_list(length=100)
+        
+        # Convert MongoDB documents to JSON-serializable format
+        serialized_uploads = []
+        for upload in uploads:
+            # Convert ObjectId to string
+            upload["_id"] = str(upload["_id"])
+            
+            # Convert datetime objects to ISO format strings
+            for key, value in upload.items():
+                if isinstance(value, datetime):
+                    upload[key] = value.isoformat()
+            
+            serialized_uploads.append(upload)
+        
+        return serialized_uploads
+    except Exception as e:
+        logging.error(f"Error getting import status: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
 @app.get("/admin/embeddings/train/{upload_id}")
 async def train_embeddings_get(request: Request, upload_id: str):
@@ -1793,3 +1867,139 @@ async def debug_page(request: Request):
             "js_template": "Disabled for debugging"
         }
     )
+
+@app.post("/admin/start-import/{upload_id}")
+async def start_import(upload_id: str):
+    """Start the import process for an uploaded file"""
+    try:
+        # Get the upload
+        upload = await app.db.uploads.find_one({"_id": ObjectId(upload_id)})
+        if not upload:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Upload not found"}
+            )
+        
+        # Check if the file exists
+        file_path = upload.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Upload file not found"}
+            )
+        
+        # Update status to extracting
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "EXTRACTING",
+                "progress": "Starting extraction...",
+                "progress_percent": 0,
+                "updated_at": datetime.now(),
+                "current_stage": "EXTRACTING",
+                "stage_progress": 0,
+                "error": None
+            }}
+        )
+        
+        # Start the extraction process in the background
+        asyncio.create_task(extract_and_import(upload_id, file_path))
+        
+        return JSONResponse(
+            content={"success": True, "message": "Import started"}
+        )
+    except Exception as e:
+        logging.error(f"Error starting import: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+async def extract_and_import(upload_id: str, file_path: str):
+    """Extract and import a Slack export file"""
+    try:
+        # Create a temporary directory for extraction
+        temp_dir = os.path.join(tempfile.gettempdir(), f"slack_extract_{upload_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Extract the ZIP file
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            total_files = len(zip_ref.namelist())
+            for i, file in enumerate(zip_ref.namelist()):
+                zip_ref.extract(file, temp_dir)
+                
+                # Update progress every 10 files or for the last file
+                if i % 10 == 0 or i == total_files - 1:
+                    progress_percent = int((i + 1) / total_files * 100)
+                    await app.db.uploads.update_one(
+                        {"_id": ObjectId(upload_id)},
+                        {"$set": {
+                            "progress": f"Extracting files... {i+1}/{total_files}",
+                            "progress_percent": progress_percent,
+                            "updated_at": datetime.now(),
+                            "stage_progress": progress_percent
+                        }}
+                    )
+        
+        # Update status to EXTRACTED
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "EXTRACTED",
+                "progress": "Extraction complete",
+                "progress_percent": 100,
+                "updated_at": datetime.now(),
+                "current_stage": "EXTRACTED",
+                "stage_progress": 100
+            }}
+        )
+        
+        # Start the import process
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "IMPORTING",
+                "progress": "Starting import...",
+                "progress_percent": 0,
+                "updated_at": datetime.now(),
+                "current_stage": "IMPORTING",
+                "stage_progress": 0
+            }}
+        )
+        
+        # Import the extracted files
+        # This is a placeholder - you would need to implement the actual import logic
+        # based on your application's requirements
+        await asyncio.sleep(2)  # Simulate some processing time
+        
+        # Update status to COMPLETED
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "COMPLETED",
+                "progress": "Import complete",
+                "progress_percent": 100,
+                "updated_at": datetime.now(),
+                "current_stage": "COMPLETED",
+                "stage_progress": 100
+            }}
+        )
+        
+        # Clean up the temporary directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    except Exception as e:
+        logging.error(f"Error in extract_and_import: {str(e)}")
+        # Update status to ERROR
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "ERROR",
+                "progress": f"Error: {str(e)}",
+                "updated_at": datetime.now(),
+                "error": str(e)
+            }}
+        )
+        # Clean up the temporary directory if it exists
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)

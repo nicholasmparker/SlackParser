@@ -129,7 +129,8 @@ function startImport(uploadId) {
  * Poll for import progress
  */
 function pollProgress(uploadId) {
-    fetch(`/admin/import-status/${uploadId}`)
+    // Use the general import-status endpoint that we know works
+    fetch('/admin/import-status')
         .then(response => {
             if (!response.ok) {
                 throw new Error(`HTTP error ${response.status}`);
@@ -137,27 +138,34 @@ function pollProgress(uploadId) {
             return response.json();
         })
         .then(data => {
-            // Update UI with progress
-            UI.updateStatus(
-                uploadId,
-                data.status,
-                data.progress,
-                data.progress_percent,
-                data.error_message
-            );
+            // Check if this upload is in the data
+            if (data[uploadId]) {
+                // Update UI with progress
+                UI.updateStatus(
+                    uploadId,
+                    data[uploadId].status,
+                    data[uploadId].progress,
+                    data[uploadId].progress_percent,
+                    data[uploadId].error_message
+                );
 
-            // Update action buttons
-            updateActions(uploadId, data.status);
-
-            // Continue polling if import is still in progress
-            if (['extracting', 'importing', 'training'].includes(data.status.toLowerCase())) {
+                // Update action buttons
+                updateActions(uploadId, data[uploadId].status);
+                
+                // Continue polling if import is still in progress
+                if (['extracting', 'importing', 'training'].includes(data[uploadId].status.toLowerCase())) {
+                    setTimeout(() => pollProgress(uploadId), 2000);
+                } else if (data[uploadId].status.toLowerCase() === 'complete') {
+                    // If training is complete, stop polling
+                    console.log('Import and training complete');
+                } else if (data[uploadId].status.toLowerCase() === 'extracted') {
+                    // If extraction is complete but import hasn't started yet, poll less frequently
+                    setTimeout(() => pollProgress(uploadId), 5000);
+                }
+            } else {
+                // Upload not found in data, retry after delay
+                console.warn(`Upload ${uploadId} not found in import status data`);
                 setTimeout(() => pollProgress(uploadId), 2000);
-            } else if (data.status.toLowerCase() === 'complete') {
-                // If training is complete, stop polling
-                console.log('Import and training complete');
-            } else if (data.status.toLowerCase() === 'extracted') {
-                // If extraction is complete but import hasn't started yet, poll less frequently
-                setTimeout(() => pollProgress(uploadId), 5000);
             }
         })
         .catch(error => {
