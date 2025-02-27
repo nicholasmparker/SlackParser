@@ -4,6 +4,36 @@
 document.addEventListener('DOMContentLoaded', function() {
     const clearCheckboxes = document.querySelectorAll('.clear-checkbox');
     const clearButton = document.getElementById('clearButton');
+    const clearAllBtn = document.getElementById('clear-all-btn');
+
+    // Handle clear all button
+    if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', function() {
+            if (confirm('Are you sure you want to clear ALL data? This action cannot be undone.')) {
+                fetch('/admin/clear-all')
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! Status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data.status === 'success') {
+                            alert('All data cleared successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Error clearing data: ' + data.message);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        // Still reload the page since the data might have been cleared
+                        alert('There was an error, but data may have been cleared. Reloading page...');
+                        window.location.reload();
+                    });
+            }
+        });
+    }
 
     if (!clearCheckboxes.length || !clearButton) return;
 

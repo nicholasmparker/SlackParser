@@ -128,8 +128,8 @@ function startImport(uploadId) {
             console.log("Current status:", data);
 
             if (data.status === "UPLOADED") {
-                // Call the start-import endpoint for extraction
-                fetch(`/admin/import/${uploadId}/start`, {
+                // Call the extract endpoint for extraction
+                fetch(`/admin/extract/${uploadId}/start`, {
                     method: 'POST'
                 })
                     .then(response => {

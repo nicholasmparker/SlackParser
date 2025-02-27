@@ -806,6 +806,17 @@ async def admin_start_import(upload_id: str):
             content={"success": False, "error": f"Error starting import: {str(e)}"}
         )
 
+@app.get("/admin/clear-all")
+async def admin_clear_all():
+    """Clear all data from the database and file system."""
+    try:
+        main_service = MainService(db=app.db)
+        result = await main_service.clear_all_data()
+        return result
+    except Exception as e:
+        logger.error(f"Error clearing data: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Run the application
 if __name__ == "__main__":
     import uvicorn
