@@ -12,7 +12,10 @@
         <div class="max-w-7xl mx-auto px-4">
             <div class="flex items-center justify-between h-14">
                 <div class="flex items-center">
-                    <a href="/" class="text-white font-bold text-lg">Slack Parser</a>
+                    <a href="/" class="flex items-center text-white font-bold text-lg">
+                        <img src="/static/images/slack-logo.svg" alt="Slack Logo" class="h-6 w-6 mr-2">
+                        Slack Parser
+                    </a>
                     <div class="hidden md:block">
                         <div class="ml-10 flex items-baseline space-x-4">
                             <a href="/" class="{% if request.url.path == '/' %}bg-[#1A1D21] text-white{% else %}text-gray-300 hover:bg-[#1A1D21] hover:text-white{% endif %} px-3 py-2 rounded-md text-sm font-medium">Home</a>
