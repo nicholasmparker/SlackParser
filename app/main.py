@@ -665,9 +665,37 @@ async def start_import(upload_id: str, request: Request):
         if current_status == "EXTRACTED":
             print("Starting import phase")
 
-            # Set extract path
-            extract_path = Path("/data/extracts") / upload_id
+            # Get extract path from upload
+            extract_path = Path(upload.get("extract_path", ""))
             print(f"Extract path: {extract_path}")
+
+            # Check if extract path exists
+            if not extract_path.exists():
+                print(f"Extract path does not exist: {extract_path}")
+                error_message = f"Extraction directory not found: {extract_path}"
+
+                # Update status to ERROR
+                if is_sync_client:
+                    db.uploads.update_one(
+                        {"_id": upload_id_obj},
+                        {"$set": {
+                            "status": "ERROR",
+                            "error": error_message,
+                            "progress": "Import failed: Extraction directory not found",
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                else:
+                    await db.uploads.update_one(
+                        {"_id": upload_id_obj},
+                        {"$set": {
+                            "status": "ERROR",
+                            "error": error_message,
+                            "progress": "Import failed: Extraction directory not found",
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                return {"status": "error", "message": error_message}
 
             # Find the actual Slack export directory (it's usually a subdirectory)
             slack_export_dirs = list(extract_path.glob("slack-export*"))
@@ -696,7 +724,7 @@ async def start_import(upload_id: str, request: Request):
 
             # Start extraction in a separate thread
             file_path = upload.get("file_path", "")
-            extract_path = Path("/data/extracts") / upload_id
+            extract_path = Path(f"/data/extracts/{upload_id}")
 
             if not is_sync_client:  # Async client
                 # Use async version
@@ -805,16 +833,16 @@ async def cancel_import(upload_id: str):
     try:
         # Convert the upload_id string to ObjectId
         upload_oid = ObjectId(upload_id)
-        
+
         # Find the upload in the database
         upload = await app.db.uploads.find_one({"_id": upload_oid})
-        
+
         if not upload:
             return JSONResponse(
                 status_code=404,
                 content={"success": False, "error": "Upload not found"}
             )
-        
+
         # Update status to CANCELLED
         await app.db.uploads.update_one(
             {"_id": upload_oid},
@@ -825,7 +853,7 @@ async def cancel_import(upload_id: str):
                 "error": "Import cancelled by user"
             }}
         )
-        
+
         # Return success
         return JSONResponse(
             content={"success": True, "message": "Import cancelled"}
@@ -1366,16 +1394,16 @@ async def restart_import(upload_id: str):
     try:
         # Convert the upload_id string to ObjectId
         upload_oid = ObjectId(upload_id)
-        
+
         # Find the upload in the database
         upload = await app.db.uploads.find_one({"_id": upload_oid})
-        
+
         if not upload:
             return JSONResponse(
                 status_code=404,
                 content={"success": False, "error": "Upload not found"}
             )
-        
+
         # Check if the file exists
         file_path = upload.get("file_path")
         if not file_path or not os.path.exists(file_path):
@@ -1383,7 +1411,7 @@ async def restart_import(upload_id: str):
                 status_code=400,
                 content={"success": False, "error": "Upload file not found"}
             )
-        
+
         # Update status to extracting
         await app.db.uploads.update_one(
             {"_id": upload_oid},
@@ -1397,10 +1425,10 @@ async def restart_import(upload_id: str):
                 "error": None
             }}
         )
-        
+
         # Start the extraction process in the background
         asyncio.create_task(extract_and_import(upload_id, file_path))
-        
+
         return JSONResponse(
             content={"success": True, "message": "Import restarted"}
         )
@@ -1885,62 +1913,6 @@ async def start_import(upload_id: str):
             content={"success": False, "error": str(e)}
         )
 
-async def extract_and_import(upload_id: str, file_path: str):
-    """Extract and import a Slack export file"""
-    try:
-        # Create a temporary directory for extraction
-        temp_dir = os.path.join(tempfile.gettempdir(), f"slack_extract_{upload_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # Extract the ZIP file
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            total_files = len(zip_ref.namelist())
-            for i, file in enumerate(zip_ref.namelist()):
-                zip_ref.extract(file, temp_dir)
-
-                # Update progress every 10 files or for the last file
-                if i % 10 == 0 or i == total_files - 1:
-                    progress_percent = int((i + 1) / total_files * 100)
-                    await app.db.uploads.update_one(
-                        {"_id": ObjectId(upload_id)},
-                        {"$set": {
-                            "progress": f"Extracting files... {i+1}/{total_files}",
-                            "progress_percent": progress_percent,
-                            "updated_at": datetime.now(),
-                            "stage_progress": progress_percent
-                        }}
-                    )
-
-        # Update status to EXTRACTED
-        await app.db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "EXTRACTED",
-                "progress": "Extraction complete. Click play to start importing.",
-                "progress_percent": 100,
-                "updated_at": datetime.now(),
-                "current_stage": "EXTRACTED",
-                "stage_progress": 100,
-                "extract_path": temp_dir
-            }}
-        )
-
-    except Exception as e:
-        logging.error(f"Error in extract_and_import: {str(e)}")
-        # Update status to ERROR
-        await app.db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "ERROR",
-                "progress": f"Error: {str(e)}",
-                "updated_at": datetime.now(),
-                "error": str(e)
-            }}
-        )
-        # Clean up the temporary directory if it exists
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
 async def start_import_process(upload_id: str):
     """Start the import process for an extracted upload"""
     try:
@@ -1973,29 +1945,24 @@ async def start_import_process(upload_id: str):
             }}
         )
 
-        # Import the extracted files
-        # This is a placeholder - you would need to implement the actual import logic
-        # based on your application's requirements
-        await asyncio.sleep(2)  # Simulate some processing time
+        # Find the actual Slack export directory (it's usually a subdirectory)
+        extract_path_obj = Path(extract_path)
+        slack_export_dirs = list(extract_path_obj.glob("slack-export*"))
+        if slack_export_dirs:
+            extract_path_obj = slack_export_dirs[0]
+            logging.info(f"Found Slack export directory: {extract_path_obj}")
 
-        # Update status to COMPLETED
-        await app.db.uploads.update_one(
-            {"_id": ObjectId(upload_id)},
-            {"$set": {
-                "status": "COMPLETED",
-                "progress": "Import complete",
-                "progress_percent": 100,
-                "updated_at": datetime.now(),
-                "current_stage": "COMPLETED",
-                "stage_progress": 100
-            }}
+        # Start the import in a background thread
+        thread = threading.Thread(
+            target=import_slack_export_sync,
+            args=(app.sync_db, extract_path_obj, upload_id)
         )
-
-        # Clean up the temporary directory
-        shutil.rmtree(extract_path, ignore_errors=True)
+        thread.daemon = True
+        thread.start()
+        logging.info(f"Started import thread: {thread.name}")
 
         return JSONResponse(
-            content={"success": True, "message": "Import completed successfully"}
+            content={"success": True, "message": "Import started successfully"}
         )
     except Exception as e:
         logging.error(f"Error in start_import_process: {str(e)}")
@@ -2046,3 +2013,59 @@ async def start_import_endpoint(upload_id: str):
             status_code=500,
             content={"success": False, "error": str(e)}
         )
+
+async def extract_and_import(upload_id: str, file_path: str):
+    """Extract and import a Slack export file"""
+    try:
+        # Create extraction directory in the mounted volume
+        extract_dir = f"/data/extracts/{upload_id}"
+        os.makedirs(extract_dir, exist_ok=True)
+
+        # Extract the ZIP file
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            total_files = len(zip_ref.namelist())
+            for i, file in enumerate(zip_ref.namelist()):
+                zip_ref.extract(file, extract_dir)
+
+                # Update progress every 10 files or for the last file
+                if i % 10 == 0 or i == total_files - 1:
+                    progress_percent = int((i + 1) / total_files * 100)
+                    await app.db.uploads.update_one(
+                        {"_id": ObjectId(upload_id)},
+                        {"$set": {
+                            "progress": f"Extracting files... {i+1}/{total_files}",
+                            "progress_percent": progress_percent,
+                            "updated_at": datetime.now(),
+                            "stage_progress": progress_percent
+                        }}
+                    )
+
+        # Update status to EXTRACTED
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "EXTRACTED",
+                "progress": "Extraction complete. Click play to start importing.",
+                "progress_percent": 100,
+                "updated_at": datetime.now(),
+                "current_stage": "EXTRACTED",
+                "stage_progress": 100,
+                "extract_path": extract_dir
+            }}
+        )
+
+    except Exception as e:
+        logging.error(f"Error in extract_and_import: {str(e)}")
+        # Update status to ERROR
+        await app.db.uploads.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "ERROR",
+                "progress": f"Error: {str(e)}",
+                "updated_at": datetime.now(),
+                "error": str(e)
+            }}
+        )
+        # Clean up the extraction directory if it exists
+        if os.path.exists(extract_dir):
+            shutil.rmtree(extract_dir, ignore_errors=True)
