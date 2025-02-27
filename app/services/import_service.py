@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 
 class ImportService:
     """Service for importing Slack export files."""
-    
+
     def __init__(self, db=None, sync_db=None):
         """Initialize the import service."""
         self.db = db
         self.sync_db = sync_db
         self.data_dir = os.getenv("DATA_DIR", "data")
-    
+
     async def start_import_process(self, upload_id: str) -> Dict[str, Any]:
         """Start the import process for an extracted upload."""
         try:
@@ -34,7 +34,7 @@ class ImportService:
             # Check if the extract path exists
             extract_path = upload.get("extract_path")
             logger.info(f"Extract path from database: {extract_path}")
-            
+
             # Convert to Path object and check if it exists
             extract_path_obj = Path(extract_path) if extract_path else None
             if not extract_path_obj or not extract_path_obj.exists():
@@ -56,18 +56,18 @@ class ImportService:
 
             # Find the actual Slack export directory (it's usually a subdirectory)
             logger.info(f"Looking for Slack export directory in {extract_path_obj}")
-            
+
             # List all directories to see what's available
             if extract_path_obj.exists():
                 logger.debug("Contents of extract directory:")
                 for item in extract_path_obj.iterdir():
                     logger.debug(f"  - {item} (is_dir: {item.is_dir()})")
-            
+
             # Try different patterns to find the Slack export directory
             slack_export_dirs = list(extract_path_obj.glob("slack-export*")) or \
                               list(extract_path_obj.glob("*slack*")) or \
                               [d for d in extract_path_obj.iterdir() if d.is_dir()]
-            
+
             if slack_export_dirs:
                 logger.info(f"Found Slack export subdirectories: {slack_export_dirs}")
                 extract_path_obj = slack_export_dirs[0]
@@ -85,14 +85,14 @@ class ImportService:
                     "stage_progress": 0
                 }}
             )
-            
+
             # Start the import in a separate thread
             def start_thread():
                 try:
                     self.import_slack_export_sync(extract_path_obj, upload_id)
                 except Exception as e:
                     logger.error(f"Error in import thread: {e}", exc_info=True)
-            
+
             threading.Thread(name=f"import-{upload_id}", target=start_thread, daemon=True).start()
             logger.info(f"Started import thread for {upload_id}")
 
@@ -110,15 +110,15 @@ class ImportService:
                 }}
             )
             return {"success": False, "error": str(e)}
-    
+
     def import_slack_export_sync(self, extract_path: Path, upload_id: str):
         """Import a Slack export file - synchronous version."""
         logger.info(f"=== IMPORT_SLACK_EXPORT_SYNC STARTED FOR {upload_id} ===")
         logger.info(f"Importing from {extract_path}, exists: {extract_path.exists()}")
-        
+
         # Convert upload_id to ObjectId if it's a string
         upload_id_obj = ObjectId(upload_id) if isinstance(upload_id, str) else upload_id
-        
+
         # Update status to IMPORTING
         try:
             self.sync_db.uploads.update_one(
@@ -133,26 +133,39 @@ class ImportService:
             logger.info("Updated status to IMPORTING")
         except Exception as e:
             logger.error(f"Error updating status to IMPORTING: {e}", exc_info=True)
-            
+
         # Get list of channel files
         try:
             # Only include files from channels and dms directories, skip files directory
             channel_files = []
-            
+
             # Process channels directory
             channels_dir = extract_path / "channels"
             if channels_dir.exists() and channels_dir.is_dir():
                 logger.info(f"Processing channels directory: {channels_dir}")
                 channel_files.extend(list(channels_dir.rglob("*.txt")))
-                
+
             # Process dms directory
             dms_dir = extract_path / "dms"
             if dms_dir.exists() and dms_dir.is_dir():
                 logger.info(f"Processing dms directory: {dms_dir}")
                 channel_files.extend(list(dms_dir.rglob("*.txt")))
-                
+
+            # Filter out non-message files
+            filtered_channel_files = []
+            for file in channel_files:
+                if (file.name in ["title.txt", "metadata.txt"] or
+                    "canvas_in_the_conversation" in str(file) or
+                    "/shares/" in str(file) or
+                    "/canvases/" in str(file) or
+                    "/files/" in str(file)):
+                    logger.info(f"Skipping non-message file: {file}")
+                    continue
+                filtered_channel_files.append(file)
+
+            channel_files = filtered_channel_files
             total_files = len(channel_files)
-            logger.info(f"Found {total_files} channel files in channels and dms directories")
+            logger.info(f"Found {total_files} channel files after filtering in channels and dms directories")
 
             if total_files == 0:
                 logger.warning(f"No channel files found in channels or dms directories")
@@ -160,7 +173,7 @@ class ImportService:
                 logger.debug(f"Directory contents of {extract_path}:")
                 for item in extract_path.iterdir():
                     logger.debug(f"  - {item} (is_dir: {item.is_dir()}, exists: {item.exists()})")
-                    
+
                     # If it's a directory, check its contents too
                     if item.is_dir():
                         logger.debug(f"    Contents of {item}:")
@@ -299,21 +312,21 @@ class ImportService:
             logger.error(f"Error updating status to IMPORTED: {e}", exc_info=True)
 
         logger.info(f"=== IMPORT_SLACK_EXPORT_SYNC COMPLETED FOR {upload_id} ===")
-    
+
     def process_file_sync(self, file_path: Path, upload_id: ObjectId) -> Tuple[Channel, List[Message]]:
         """Process a single Slack export file.
-        
+
         Args:
             file_path: Path to file
             upload_id: ID of upload
-            
+
         Returns:
             Tuple of (channel metadata, list of messages)
         """
         try:
             logger.debug(f"Processing {file_path}")
             logger.debug(f"File exists: {file_path.exists()}, size: {file_path.stat().st_size if file_path.exists() else 'N/A'}")
-            
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     lines = [line.rstrip("\n") for line in f.readlines()]
@@ -378,7 +391,7 @@ class ImportService:
                             })
                         except Exception as db_err:
                             logger.error(f"Error logging failed message: {db_err}")
-            
+
             logger.debug(f"Parsed {len(messages)} messages from {file_path}")
 
             return channel, messages

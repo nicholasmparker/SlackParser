@@ -16,7 +16,7 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.db.models import Channel, Message, Reaction
-from app.db.mongo import get_database
+from app.dependencies import get_database
 from app.importer.parser import parse_channel_metadata, parse_dm_metadata, parse_message, ParserError
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,7 @@ async def import_slack_export(db: AsyncIOMotorClient, extract_path: Path, upload
                 "canvas_in_the_conversation" in str(txt_file) or
                 "/shares/" in str(txt_file) or
                 "/canvases/" in str(txt_file)):
+                logger.info(f"Skipping non-message file: {txt_file}")
                 processed_files += 1
                 continue
 
@@ -242,7 +243,7 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         {"$set": channel.model_dump()},
                         upsert=True
                     )
-                    
+
                     # Also insert into conversations collection for UI
                     conversation = {
                         "name": channel.name,
@@ -325,7 +326,7 @@ async def import_slack_export_from_folder(db, extract_path: Path, upload_id: Obj
                         {"$set": channel.model_dump()},
                         upsert=True
                     )
-                    
+
                     # Also insert into conversations collection for UI
                     conversation = {
                         "name": channel.name,
