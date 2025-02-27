@@ -731,24 +731,24 @@ async def get_single_import_status(upload_id: str):
     try:
         # Convert the upload_id string to ObjectId
         upload_oid = ObjectId(upload_id)
-        
+
         # Find the upload in the database
         upload = await app.db.uploads.find_one({"_id": upload_oid})
-        
+
         if not upload:
             return JSONResponse(
                 status_code=404,
                 content={"error": "Upload not found"}
             )
-        
+
         # Convert ObjectId to string for JSON serialization
         upload["_id"] = str(upload["_id"])
-        
+
         # Convert datetime objects to ISO format strings
         for key, value in upload.items():
             if isinstance(value, datetime):
                 upload[key] = value.isoformat()
-        
+
         # Return the upload status
         return {
             "status": upload.get("status", "UNKNOWN"),
@@ -799,70 +799,47 @@ async def get_import_status(upload_id: str, request: Request):
         "error": upload.get("error")
     }
 
-@app.post("/admin/import/{upload_id}/cancel")
-async def cancel_import(request: Request, upload_id: str):
-    """Cancel a stuck import"""
+@app.post("/admin/cancel-import/{upload_id}")
+async def cancel_import(upload_id: str):
+    """Cancel an in-progress import"""
     try:
-        db = request.app.db
-        upload_id = ObjectId(upload_id)
-
-        # Get upload - handle both async and sync MongoDB clients
-        is_sync_client = str(type(db)) == "<class 'pymongo.database.Database'>"
-
-        if is_sync_client:  # Sync client
-            upload = db.uploads.find_one({"_id": upload_id})
-        else:  # Async client
-            upload = await db.uploads.find_one({"_id": upload_id})
-
+        # Convert the upload_id string to ObjectId
+        upload_oid = ObjectId(upload_id)
+        
+        # Find the upload in the database
+        upload = await app.db.uploads.find_one({"_id": upload_oid})
+        
         if not upload:
             return JSONResponse(
                 status_code=404,
-                content={"detail": "Upload not found"}
+                content={"success": False, "error": "Upload not found"}
             )
-
-        # Only allow cancelling if in an active state
-        active_states = ["EXTRACTING", "IMPORTING", "EMBEDDING"]
-        if upload["status"] not in active_states:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": f"Cannot cancel import that is not in progress. Current status: {upload['status']}"}
-            )
-
-        # Update status to UPLOADED so it can be restarted
-        if is_sync_client:  # Sync client
-            db.uploads.update_one(
-                {"_id": upload_id},
-                {
-                    "$set": {
-                        "status": "UPLOADED",
-                        "error": None,
-                        "progress": "Import cancelled and reset. Ready to restart.",
-                        "progress_percent": 0,
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-        else:  # Async client
-            await db.uploads.update_one(
-                {"_id": upload_id},
-                {
-                    "$set": {
-                        "status": "UPLOADED",
-                        "error": None,
-                        "progress": "Import cancelled and reset. Ready to restart.",
-                        "progress_percent": 0,
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-
-        return {"success": True, "status": "UPLOADED"}
-
+        
+        # Update status to CANCELLED
+        await app.db.uploads.update_one(
+            {"_id": upload_oid},
+            {"$set": {
+                "status": "CANCELLED",
+                "progress": "Import cancelled",
+                "updated_at": datetime.now(),
+                "error": "Import cancelled by user"
+            }}
+        )
+        
+        # Return success
+        return JSONResponse(
+            content={"success": True, "message": "Import cancelled"}
+        )
+    except InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Invalid upload ID format"}
+        )
     except Exception as e:
-        logger.exception("Error cancelling import")
+        logging.error(f"Error cancelling import: {str(e)}")
         return JSONResponse(
             status_code=500,
-            content={"detail": str(e)}
+            content={"success": False, "error": str(e)}
         )
 
 @app.get("/admin/import/{upload_id}/failed")
@@ -1189,20 +1166,20 @@ async def get_import_status():
     """Get status of all imports"""
     try:
         uploads = await app.db.uploads.find().to_list(length=100)
-        
+
         # Convert MongoDB documents to JSON-serializable format
         serialized_uploads = []
         for upload in uploads:
             # Convert ObjectId to string
             upload["_id"] = str(upload["_id"])
-            
+
             # Convert datetime objects to ISO format strings
             for key, value in upload.items():
                 if isinstance(value, datetime):
                     upload[key] = value.isoformat()
-            
+
             serialized_uploads.append(upload)
-        
+
         return serialized_uploads
     except Exception as e:
         logging.error(f"Error getting import status: {str(e)}")
@@ -1879,7 +1856,7 @@ async def start_import(upload_id: str):
                 status_code=404,
                 content={"success": False, "error": "Upload not found"}
             )
-        
+
         # Check if the file exists
         file_path = upload.get("file_path")
         if not file_path or not os.path.exists(file_path):
@@ -1887,7 +1864,7 @@ async def start_import(upload_id: str):
                 status_code=400,
                 content={"success": False, "error": "Upload file not found"}
             )
-        
+
         # Update status to extracting
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1901,10 +1878,10 @@ async def start_import(upload_id: str):
                 "error": None
             }}
         )
-        
+
         # Start the extraction process in the background
         asyncio.create_task(extract_and_import(upload_id, file_path))
-        
+
         return JSONResponse(
             content={"success": True, "message": "Import started"}
         )
@@ -1921,13 +1898,13 @@ async def extract_and_import(upload_id: str, file_path: str):
         # Create a temporary directory for extraction
         temp_dir = os.path.join(tempfile.gettempdir(), f"slack_extract_{upload_id}")
         os.makedirs(temp_dir, exist_ok=True)
-        
+
         # Extract the ZIP file
         with zipfile.ZipFile(file_path, 'r') as zip_ref:
             total_files = len(zip_ref.namelist())
             for i, file in enumerate(zip_ref.namelist()):
                 zip_ref.extract(file, temp_dir)
-                
+
                 # Update progress every 10 files or for the last file
                 if i % 10 == 0 or i == total_files - 1:
                     progress_percent = int((i + 1) / total_files * 100)
@@ -1940,7 +1917,7 @@ async def extract_and_import(upload_id: str, file_path: str):
                             "stage_progress": progress_percent
                         }}
                     )
-        
+
         # Update status to EXTRACTED
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1953,7 +1930,7 @@ async def extract_and_import(upload_id: str, file_path: str):
                 "stage_progress": 100
             }}
         )
-        
+
         # Start the import process
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1966,12 +1943,12 @@ async def extract_and_import(upload_id: str, file_path: str):
                 "stage_progress": 0
             }}
         )
-        
+
         # Import the extracted files
         # This is a placeholder - you would need to implement the actual import logic
         # based on your application's requirements
         await asyncio.sleep(2)  # Simulate some processing time
-        
+
         # Update status to COMPLETED
         await app.db.uploads.update_one(
             {"_id": ObjectId(upload_id)},
@@ -1984,10 +1961,10 @@ async def extract_and_import(upload_id: str, file_path: str):
                 "stage_progress": 100
             }}
         )
-        
+
         # Clean up the temporary directory
         shutil.rmtree(temp_dir, ignore_errors=True)
-        
+
     except Exception as e:
         logging.error(f"Error in extract_and_import: {str(e)}")
         # Update status to ERROR
