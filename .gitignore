@@ -35,6 +35,7 @@ ENV/
 # Project specific
 data/extracts/
 data/uploads/
+data/chroma/
 data/test_export.zip
 !data/.gitkeep
 file_storage/*
